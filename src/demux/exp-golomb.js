@@ -111,6 +111,13 @@ class ExpGolomb {
         }
     }
 
+    getBitsLeft() {
+        return this._current_word_bits_left;
+    }
+
+    skipBits(bits) {
+        readBits(bits);
+    }
 }
 
 export default ExpGolomb;
