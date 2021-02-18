@@ -3,36 +3,108 @@
  *
  * @author zheng qian <xqq@xqq.im>
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
+ * Licensed under the Apache License, Version 2.0 (the 'License');
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
+ * distributed under the License is distributed on an 'AS IS' BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
 
+import Log from '../utils/logger.js';
 import ExpGolomb from './exp-golomb.js';
 
 class HevcParser {
-        
-    HEVC_NAL_UNIT_CODED_SLICE_BLA_W_LP = 16;
-	HEVC_NAL_UNIT_CODED_SLICE_BLA_W_RADL = 17;
-	HEVC_NAL_UNIT_CODED_SLICE_BLA_N_LP = 18;
-	HEVC_NAL_UNIT_CODED_SLICE_IDR_W_RADL = 19;
-	HEVC_NAL_UNIT_CODED_SLICE_IDR_N_LP = 20;
-	HEVC_NAL_UNIT_CODED_SLICE_CRA = 21;
 
-    HEVC_MAX_SUB_LAYERS = 7;
+    static FFMAX(a, b) {
+        return ((a) > (b) ? (a) : (b));
+    }
+
+    static FFMIN(a, b) {
+        return ((a) < (b) ? (a) : (b));
+    }
+    static av_mod_uintp2(a, p) {
+        return a & ((1 << p) - 1);
+    }
+    static init() {
+        // 
+        let constants = HevcParser.constants = {};
+
+        constants.INT_MAX = 2147483647;
+
+        constants.default_scaling_list_intra = new Uint8Array([
+            16, 16, 16, 16, 17, 18, 21, 24,
+            16, 16, 16, 16, 17, 19, 22, 25,
+            16, 16, 17, 18, 20, 22, 25, 29,
+            16, 16, 18, 21, 24, 27, 31, 36,
+            17, 17, 20, 24, 30, 35, 41, 47,
+            18, 19, 22, 27, 35, 44, 54, 65,
+            21, 22, 25, 31, 41, 54, 70, 88,
+            24, 25, 29, 36, 47, 65, 88, 115
+        ]);
+        
+        constants.default_scaling_list_inter = new Uint8Array([
+            16, 16, 16, 16, 17, 18, 20, 24,
+            16, 16, 16, 17, 18, 20, 24, 25,
+            16, 16, 17, 18, 20, 24, 25, 28,
+            16, 17, 18, 20, 24, 25, 28, 33,
+            17, 18, 20, 24, 25, 28, 33, 41,
+            18, 20, 24, 25, 28, 33, 41, 54,
+            20, 24, 25, 28, 33, 41, 54, 71,
+            24, 25, 28, 33, 41, 54, 71, 91
+        ]);
+        /*
+        static const AVRational vui_sar[] = {
+            {  0,   1 },
+            {  1,   1 },
+            { 12,  11 },
+            { 10,  11 },
+            { 16,  11 },
+            { 40,  33 },
+            { 24,  11 },
+            { 20,  11 },
+            { 32,  11 },
+            { 80,  33 },
+            { 18,  11 },
+            { 15,  11 },
+            { 64,  33 },
+            { 160, 99 },
+            {  4,   3 },
+            {  3,   2 },
+            {  2,   1 },
+        };
+        */
+        constants.hevc_sub_width_c = new Uint8Array([
+            1, 2, 2, 1
+        ]);
+        
+        constants.hevc_sub_height_c = new Uint8Array([
+            1, 2, 1, 1
+        ]);
+
+        constants.HEVC_NAL_UNIT_CODED_SLICE_BLA_W_LP = 16;
+        constants.HEVC_NAL_UNIT_CODED_SLICE_BLA_W_RADL = 17;
+        constants.HEVC_NAL_UNIT_CODED_SLICE_BLA_N_LP = 18;
+        constants.HEVC_NAL_UNIT_CODED_SLICE_IDR_W_RADL = 19;
+        constants.HEVC_NAL_UNIT_CODED_SLICE_IDR_N_LP = 20;
+        constants.HEVC_NAL_UNIT_CODED_SLICE_CRA = 21;
+
+        constants.HEVC_MAX_SUB_LAYERS = 7;
+        constants.HEVC_MAX_SPS_COUNT = 16;
+        constants.HEVC_MAX_REFS = 16;
+        
+        constants.FF_PROFILE_HEVC_MAIN =                        1;
+        constants.FF_PROFILE_HEVC_MAIN_10 =                     2;
+        constants.FF_PROFILE_HEVC_MAIN_STILL_PICTURE =          3;
+        constants.FF_PROFILE_HEVC_REXT =                        4;
+    }
+        
     
-    FF_PROFILE_HEVC_MAIN =                        1;
-    FF_PROFILE_HEVC_MAIN_10 =                     2;
-    FF_PROFILE_HEVC_MAIN_STILL_PICTURE =          3;
-    FF_PROFILE_HEVC_REXT =                        4;
 
     static _ebsp2rbsp(uint8array) {
         let src = uint8array;
@@ -54,156 +126,471 @@ class HevcParser {
         return new Uint8Array(dst.buffer, 0, dst_idx);
     }
 
-    static parseSPS(uint8array) {
-        let rbsp = HevcParser._ebsp2rbsp(uint8array);
-        let gb = new ExpGolomb(rbsp);
+    static ff_hevc_decode_short_term_rps(gb, rps, sps, is_slice_header) {
+        let rps_predict = 0;
+        let delta_poc;
+        let k0 = 0;
+        let k1 = 0;
+        let k  = 0;
+        let i;
 
-        gb.readByte();
-        let profile_idc = gb.readByte();  // profile_idc
-        gb.readByte();  // constraint_set_flags[5] + reserved_zero[3]
-        let level_idc = gb.readByte();  // level_idc
-        gb.readUEG();  // seq_parameter_set_id
+        if (rps != sps.st_rps && sps.nb_st_rps)
+            rps_predict = gb.readBits(1);//  get_bits1(gb);
 
-        let profile_string = HevcParser.getProfileString(profile_idc);
-        let level_string = HevcParser.getLevelString(level_idc);
-        let chroma_format_idc = 1;
-        let chroma_format = 420;
-        let chroma_format_table = [0, 420, 422, 444];
-        let bit_depth = 8;
+        if (rps_predict) {
+            // const ShortTermRPS *rps_ridx;
+            let rps_ridx;
+            let delta_rps;
+            let abs_delta_rps;
+            let use_delta_flag = 0;
+            let delta_rps_sign;
 
-        if (profile_idc === 100 || profile_idc === 110 || profile_idc === 122 ||
-            profile_idc === 244 || profile_idc === 44 || profile_idc === 83 ||
-            profile_idc === 86 || profile_idc === 118 || profile_idc === 128 ||
-            profile_idc === 138 || profile_idc === 144) {
-
-            chroma_format_idc = gb.readUEG();
-            if (chroma_format_idc === 3) {
-                gb.readBits(1);  // separate_colour_plane_flag
+            if (is_slice_header) {
+                let delta_idx = gb.readUEG() + 1;// get_ue_golomb_long(gb) + 1;
+                if (delta_idx > sps.nb_st_rps) {
+                    Log.e(this.TAG,
+                    'Invalid value of delta_idx in slice header RPS: ${delta_idx} > ${sps.nb_st_rps}.');
+                    return -1;
+                }
+                rps_ridx = sps.st_rps[sps.nb_st_rps - delta_idx];
+                rps.rps_idx_num_delta_pocs = rps_ridx.num_delta_pocs;
+            } else {
+                rps_ridx = sps.st_rps[rps - sps.st_rps - 1];
             }
-            if (chroma_format_idc <= 3) {
-                chroma_format = chroma_format_table[chroma_format_idc];
+
+            delta_rps_sign = gb.readBits(1);// get_bits1(gb);
+            abs_delta_rps  = gb.readUEG() + 1; // get_ue_golomb_long(gb) + 1;
+            if (abs_delta_rps < 1 || abs_delta_rps > 32768) {
+                Log.e(this.TAG,
+                'Invalid value of abs_delta_rps: ${abs_delta_rps}');
+                return -1;
             }
 
-            bit_depth = gb.readUEG() + 8;  // bit_depth_luma_minus8
-            gb.readUEG();  // bit_depth_chroma_minus8
-            gb.readBits(1);  // qpprime_y_zero_transform_bypass_flag
-            if (gb.readBool()) {  // seq_scaling_matrix_present_flag
-                let scaling_list_count = (chroma_format_idc !== 3) ? 8 : 12;
-                for (let i = 0; i < scaling_list_count; i++) {
-                    if (gb.readBool()) {  // seq_scaling_list_present_flag
-                        if (i < 6) {
-                            SPSParser._skipScalingList(gb, 16);
-                        } else {
-                            SPSParser._skipScalingList(gb, 64);
+            delta_rps      = (1 - (delta_rps_sign << 1)) * abs_delta_rps;
+            for (i = 0; i <= rps_ridx.num_delta_pocs; i++) {
+                let used = rps.used[k] = gb.readBits(1); // get_bits1(gb);
+
+                if (!used)
+                    use_delta_flag = gb.readBits(1);// get_bits1(gb);
+
+                if (used || use_delta_flag) {
+                    if (i < rps_ridx.num_delta_pocs)
+                        delta_poc = delta_rps + rps_ridx.delta_poc[i];
+                    else
+                        delta_poc = delta_rps;
+                    rps.delta_poc[k] = delta_poc;
+                    if (delta_poc < 0)
+                        k0++;
+                    else
+                        k1++;
+                    k++;
+                }
+            }
+
+            // if (k >= FF_ARRAY_ELEMS(rps.used)) {
+            //     Log.e(this.TAG, 'Invalid num_delta_pocs: ${k}.');
+            //     return -1;
+            // }
+
+            rps.num_delta_pocs    = k;
+            rps.num_negative_pics = k0;
+            // sort in increasing order (smallest first)
+            if (rps.num_delta_pocs != 0) {
+                let used, tmp;
+                for (i = 1; i < rps.num_delta_pocs; i++) {
+                    delta_poc = rps.delta_poc[i];
+                    used      = rps.used[i];
+                    for (k = i - 1; k >= 0; k--) {
+                        tmp = rps.delta_poc[k];
+                        if (delta_poc < tmp) {
+                            rps.delta_poc[k + 1] = tmp;
+                            rps.used[k + 1]      = rps.used[k];
+                            rps.delta_poc[k]     = delta_poc;
+                            rps.used[k]          = used;
                         }
                     }
                 }
             }
-        }
-        gb.readUEG();  // log2_max_frame_num_minus4
-        let pic_order_cnt_type = gb.readUEG();
-        if (pic_order_cnt_type === 0) {
-            gb.readUEG();  // log2_max_pic_order_cnt_lsb_minus_4
-        } else if (pic_order_cnt_type === 1) {
-            gb.readBits(1);  // delta_pic_order_always_zero_flag
-            gb.readSEG();  // offset_for_non_ref_pic
-            gb.readSEG();  // offset_for_top_to_bottom_field
-            let num_ref_frames_in_pic_order_cnt_cycle = gb.readUEG();
-            for (let i = 0; i < num_ref_frames_in_pic_order_cnt_cycle; i++) {
-                gb.readSEG();  // offset_for_ref_frame
-            }
-        }
-        let ref_frames = gb.readUEG();  // max_num_ref_frames
-        gb.readBits(1);  // gaps_in_frame_num_value_allowed_flag
-
-        let pic_width_in_mbs_minus1 = gb.readUEG();
-        let pic_height_in_map_units_minus1 = gb.readUEG();
-
-        let frame_mbs_only_flag = gb.readBits(1);
-        if (frame_mbs_only_flag === 0) {
-            gb.readBits(1);  // mb_adaptive_frame_field_flag
-        }
-        gb.readBits(1);  // direct_8x8_inference_flag
-
-        let frame_crop_left_offset = 0;
-        let frame_crop_right_offset = 0;
-        let frame_crop_top_offset = 0;
-        let frame_crop_bottom_offset = 0;
-
-        let frame_cropping_flag = gb.readBool();
-        if (frame_cropping_flag) {
-            frame_crop_left_offset = gb.readUEG();
-            frame_crop_right_offset = gb.readUEG();
-            frame_crop_top_offset = gb.readUEG();
-            frame_crop_bottom_offset = gb.readUEG();
-        }
-
-        let sar_width = 1, sar_height = 1;
-        let fps = 0, fps_fixed = true, fps_num = 0, fps_den = 0;
-
-        let vui_parameters_present_flag = gb.readBool();
-        if (vui_parameters_present_flag) {
-            if (gb.readBool()) {  // aspect_ratio_info_present_flag
-                let aspect_ratio_idc = gb.readByte();
-                let sar_w_table = [1, 12, 10, 16, 40, 24, 20, 32, 80, 18, 15, 64, 160, 4, 3, 2];
-                let sar_h_table = [1, 11, 11, 11, 33, 11, 11, 11, 33, 11, 11, 33,  99, 3, 2, 1];
-
-                if (aspect_ratio_idc > 0 && aspect_ratio_idc < 16) {
-                    sar_width = sar_w_table[aspect_ratio_idc - 1];
-                    sar_height = sar_h_table[aspect_ratio_idc - 1];
-                } else if (aspect_ratio_idc === 255) {
-                    sar_width = gb.readByte() << 8 | gb.readByte();
-                    sar_height = gb.readByte() << 8 | gb.readByte();
+            if ((rps.num_negative_pics >> 1) != 0) {
+                let used;
+                k = rps.num_negative_pics - 1;
+                // flip the negative values to largest first
+                for (i = 0; i < rps.num_negative_pics >> 1; i++) {
+                    delta_poc         = rps.delta_poc[i];
+                    used              = rps.used[i];
+                    rps.delta_poc[i] = rps.delta_poc[k];
+                    rps.used[i]      = rps.used[k];
+                    rps.delta_poc[k] = delta_poc;
+                    rps.used[k]      = used;
+                    k--;
                 }
             }
-
-            if (gb.readBool()) {  // overscan_info_present_flag
-                gb.readBool();  // overscan_appropriate_flag
-            }
-            if (gb.readBool()) {  // video_signal_type_present_flag
-                gb.readBits(4);  // video_format & video_full_range_flag
-                if (gb.readBool()) {  // colour_description_present_flag
-                    gb.readBits(24);  // colour_primaries & transfer_characteristics & matrix_coefficients
-                }
-            }
-            if (gb.readBool()) {  // chroma_loc_info_present_flag
-                gb.readUEG();  // chroma_sample_loc_type_top_field
-                gb.readUEG();  // chroma_sample_loc_type_bottom_field
-            }
-            if (gb.readBool()) {  // timing_info_present_flag
-                let num_units_in_tick = gb.readBits(32);
-                let time_scale = gb.readBits(32);
-                fps_fixed = gb.readBool();  // fixed_frame_rate_flag
-
-                fps_num = time_scale;
-                fps_den = num_units_in_tick * 2;
-                fps = fps_num / fps_den;
-            }
-        }
-
-        let sarScale = 1;
-        if (sar_width !== 1 || sar_height !== 1) {
-            sarScale = sar_width / sar_height;
-        }
-
-        let crop_unit_x = 0, crop_unit_y = 0;
-        if (chroma_format_idc === 0) {
-            crop_unit_x = 1;
-            crop_unit_y = 2 - frame_mbs_only_flag;
         } else {
-            let sub_wc = (chroma_format_idc === 3) ? 1 : 2;
-            let sub_hc = (chroma_format_idc === 1) ? 2 : 1;
-            crop_unit_x = sub_wc;
-            crop_unit_y = sub_hc * (2 - frame_mbs_only_flag);
+            let prev, nb_positive_pics;
+            rps.num_negative_pics = gb.readUEG(); // get_ue_golomb_long(gb);
+            nb_positive_pics      = gb.readUEG(); // get_ue_golomb_long(gb);
+
+            if (rps.num_negative_pics >= HevcParser.constants.HEVC_MAX_REFS ||
+                nb_positive_pics >= HevcParser.constants.HEVC_MAX_REFS) {
+                Log.e(this.TAG, 'Too many refs in a short term RPS.\n');
+                return -1;
+            }
+
+            rps.num_delta_pocs = rps.num_negative_pics + nb_positive_pics;
+            if (rps.num_delta_pocs) {
+                prev = 0;
+                for (i = 0; i < rps.num_negative_pics; i++) {
+                    delta_poc = gb.readUEG() + 1;// get_ue_golomb_long(gb) + 1;
+                    if (delta_poc < 1 || delta_poc > 32768) {
+                        Log.e(this.TAG,
+                        'Invalid value of delta_poc: ${delta_poc}');
+                        return -1;
+                    }
+                    prev -= delta_poc;
+                    rps.delta_poc[i] = prev;
+                    rps.used[i]      = gb.readBits(1);//  get_bits1(gb);
+                }
+                prev = 0;
+                for (i = 0; i < nb_positive_pics; i++) {
+                    delta_poc = gb.readUEG() + 1;//  get_ue_golomb_long(gb) + 1;
+                    if (delta_poc < 1 || delta_poc > 32768) {
+                        Log.e(this.TAG,
+                        'Invalid value of delta_poc: ${delta_poc}');
+                        return -1;
+                    }
+                    prev += delta_poc;
+                    rps.delta_poc[rps.num_negative_pics + i] = prev;
+                    rps.used[rps.num_negative_pics + i]      = gb.readBits(1);// get_bits1(gb);
+                }
+            }
+        }
+        return 0;
+    }
+
+    static decode_vui(gb, avctx, apply_defdispwin, sps) {
+        //
+    }
+    static parseSPS(uint8array) {
+        let rbsp = HevcParser._ebsp2rbsp(uint8array);
+        let gb = new ExpGolomb(rbsp);
+        let sps;
+        let i;
+        let apply_defdispwin = 1;
+        let bit_depth = 8;
+        let chroma_format_idc = 1;
+        let chroma_format = 420;
+        let chroma_format_table = [0, 420, 422, 444];
+
+        sps.vps_id = gb.readBits(4);
+
+        sps.max_sub_layers = gb.readBits(3) + 1;
+        if (sps.max_sub_layers > HevcParser.constants.HEVC_MAX_SUB_LAYERS) {
+            Log.e(this.TAG, 'sps_max_sub_layers out of range: ${sps.max_sub_layers}');
+            return -1;
+        }
+        sps.temporal_id_nesting_flag = gb.readBits(1);
+        //
+
+        if (HevcParser.parse_ptl(gb, sps.ptl, sps.max_sub_layers) < 0) {
+            Log.e(this.TAG, 'SPS parse_ptl filed.');
+            return -1;
+        }
+        let sps_id = gb.readUEG();// get_ue_golomb_long(gb);
+        if (sps_id >= HevcParser.constants.HEVC_MAX_SPS_COUNT) {
+            Log.e(this.TAG, 'SPS id out of range: ${sps_id}');
+            return -1;
+        }
+        //
+        sps.chroma_format_idc =  gb.readUEG();// get_ue_golomb_long(gb);
+        if (sps.chroma_format_idc > 3) {
+            Log.e(this.TAG, 'chroma_format_idc ${sps.chroma_format_idc} is invalid.');
+            return -1;
+        }
+        if (sps.chroma_format_idc == 3) {
+            sps.separate_colour_plane_flag = gb.readBits(1);// get_bits1(gb);
         }
 
-        let codec_width = (pic_width_in_mbs_minus1 + 1) * 16;
-        let codec_height = (2 - frame_mbs_only_flag) * ((pic_height_in_map_units_minus1 + 1) * 16);
+        if (sps.chroma_format_idc <= 3) {
+            chroma_format = chroma_format_table[sps.chroma_format_idc];
+        }
 
-        codec_width -= (frame_crop_left_offset + frame_crop_right_offset) * crop_unit_x;
-        codec_height -= (frame_crop_top_offset + frame_crop_bottom_offset) * crop_unit_y;
+        if (sps.separate_colour_plane_flag) {
+            sps.chroma_format_idc = 0;
+        }
 
-        let present_width = Math.ceil(codec_width * sarScale);
+        sps.width  = gb.readUEG(); // get_ue_golomb_long(gb);
+        sps.height = gb.readUEG(); // get_ue_golomb_long(gb);
+        //
+        if (gb.readBool()) {
+            //
+            let vert_mult  = HevcParser.constants.hevc_sub_height_c[sps.chroma_format_idc];
+            let horiz_mult = HevcParser.constants.hevc_sub_width_c[sps.chroma_format_idc];
+            sps.pic_conf_win.left_offset   = gb.readUEG() * horiz_mult; // get_ue_golomb_long(gb) * horiz_mult;
+            sps.pic_conf_win.right_offset  = gb.readUEG() * horiz_mult; // get_ue_golomb_long(gb) * horiz_mult;
+            sps.pic_conf_win.top_offset    = gb.readUEG() *  vert_mult; // get_ue_golomb_long(gb) *  vert_mult;
+            sps.pic_conf_win.bottom_offset = gb.readUEG() *  vert_mult; // get_ue_golomb_long(gb) *  vert_mult;
+            /*
+            if (avctx->flags2 & AV_CODEC_FLAG2_IGNORE_CROP) {
+                av_log(avctx, AV_LOG_DEBUG,
+                    'discarding sps conformance window, '
+                    'original values are l:%u r:%u t:%u b:%u\n',
+                    sps.pic_conf_win.left_offset,
+                    sps.pic_conf_win.right_offset,
+                    sps.pic_conf_win.top_offset,
+                    sps.pic_conf_win.bottom_offset);
+
+                sps.pic_conf_win.left_offset   =
+                sps.pic_conf_win.right_offset  =
+                sps.pic_conf_win.top_offset    =
+                sps.pic_conf_win.bottom_offset = 0;
+            }
+            */
+            sps.output_window = sps.pic_conf_win;
+        }
+        //
+        sps.bit_depth   = gb.readUEG() + 8; // get_ue_golomb_long(gb) + 8;
+        bit_depth = sps.bit_depth;
+        let bit_depth_chroma = gb.readUEG() + 8;// get_ue_golomb_long(gb) + 8;
+        //
+        if (sps.chroma_format_idc && bit_depth_chroma != sps.bit_depth) {
+            Log.e(this.TAG,
+                   'Luma bit depth (${sps.bit_depth}) is different from chroma bit depth (${bit_depth_chroma}), this is unsupported.');
+            return -1;
+        }
+        sps.bit_depth_chroma = bit_depth_chroma;
+
+        sps.log2_max_poc_lsb = gb.readUEG() + 4;// get_ue_golomb_long(gb) + 4;
+        if (sps.log2_max_poc_lsb > 16) {
+            Log.e(this.TAG, 'log2_max_pic_order_cnt_lsb_minus4 out range: ${sps.log2_max_poc_lsb - 4}');
+            return -1;
+        }
+        //
+        let sublayer_ordering_info = gb.readBits(1); // get_bits1(gb);
+        let start = sublayer_ordering_info ? 0 : sps.max_sub_layers - 1;
+
+        for (i = start; i < sps.max_sub_layers; i++) {
+            sps.temporal_layer[i].max_dec_pic_buffering = gb.readUEG() + 1; // get_ue_golomb_long(gb) + 1;
+            sps.temporal_layer[i].num_reorder_pics      = gb.readUEG();     // get_ue_golomb_long(gb);
+            sps.temporal_layer[i].max_latency_increase  = gb.readUEG() - 1; // get_ue_golomb_long(gb) - 1;
+            if (sps.temporal_layer[i].max_dec_pic_buffering > HevcParser.constants.HEVC_MAX_DPB_SIZE) {
+                Log.e(this.TAG, 'sps_max_dec_pic_buffering_minus1 out of range: ${sps.temporal_layer[i].max_dec_pic_buffering - 1}');
+                return -1;
+            }
+            if (sps.temporal_layer[i].num_reorder_pics > sps.temporal_layer[i].max_dec_pic_buffering - 1) {
+                Log.w(this.TAG, 'sps_max_num_reorder_pics out of range: ${sps.temporal_layer[i].num_reorder_pics}');
+                /*
+                if (avctx->err_recognition & AV_EF_EXPLODE ||
+                    sps.temporal_layer[i].num_reorder_pics > HEVC_MAX_DPB_SIZE - 1) {
+                    return -1;
+                }
+                */
+                sps.temporal_layer[i].max_dec_pic_buffering = sps.temporal_layer[i].num_reorder_pics + 1;
+            }
+        }
+        //
+        if (!sublayer_ordering_info) {
+            for (i = 0; i < start; i++) {
+                sps.temporal_layer[i].max_dec_pic_buffering = sps.temporal_layer[start].max_dec_pic_buffering;
+                sps.temporal_layer[i].num_reorder_pics      = sps.temporal_layer[start].num_reorder_pics;
+                sps.temporal_layer[i].max_latency_increase  = sps.temporal_layer[start].max_latency_increase;
+            }
+        }
+    
+        sps.log2_min_cb_size                    = gb.readUEG() + 3; // get_ue_golomb_long(gb) + 3;
+        sps.log2_diff_max_min_coding_block_size = gb.readUEG();    // get_ue_golomb_long(gb);
+        sps.log2_min_tb_size                    = gb.readUEG() + 2; // get_ue_golomb_long(gb) + 2;
+        let log2_diff_max_min_transform_block_size  = gb.readUEG();    // get_ue_golomb_long(gb);
+        sps.log2_max_trafo_size                 = log2_diff_max_min_transform_block_size +
+                                                   sps.log2_min_tb_size;
+    
+        if (sps.log2_min_cb_size < 3 || sps.log2_min_cb_size > 30) {
+            Log.e(this.TAG, 'Invalid value ${sps.log2_min_cb_size} for log2_min_cb_size');
+            return -1;
+        }
+    
+        if (sps.log2_diff_max_min_coding_block_size > 30) {
+            Log.e(this.TAG, 'Invalid value ${sps.log2_diff_max_min_coding_block_size} for log2_diff_max_min_coding_block_size');
+            return -1;
+        }
+    
+        if (sps.log2_min_tb_size >= sps.log2_min_cb_size || sps.log2_min_tb_size < 2) {
+            Log.e(this.TAG, 'Invalid value for log2_min_tb_size');
+            return -1;
+        }
+    
+        if (log2_diff_max_min_transform_block_size < 0 || log2_diff_max_min_transform_block_size > 30) {
+            Log.e(this.TAG, 'Invalid value ${log2_diff_max_min_transform_block_size} for log2_diff_max_min_transform_block_size');
+            return -1;
+        }
+    
+        sps.max_transform_hierarchy_depth_inter = gb.readUEG();// get_ue_golomb_long(gb);
+        sps.max_transform_hierarchy_depth_intra = gb.readUEG();// get_ue_golomb_long(gb);
+    
+        sps.scaling_list_enable_flag = gb.readBits(1);// get_bits1(gb);
+        if (sps.scaling_list_enable_flag) {
+            // set_default_scaling_list_data(&sps.scaling_list);
+    
+            if (gb.readBool()) { // get_bits1(gb)
+                // ret = scaling_list_data(gb, avctx, sps.scaling_list, sps);
+                // if (ret < 0)
+                //     return ret;
+            }
+        }
+    
+        sps.amp_enabled_flag = gb.readBits(1);// get_bits1(gb);
+        sps.sao_enabled      = gb.readBits(1);// get_bits1(gb);
+    
+        sps.pcm_enabled_flag = gb.readBits(1);// get_bits1(gb);
+        if (sps.pcm_enabled_flag) {
+            sps.pcm.bit_depth   = gb.readBits(4) + 1;       // get_bits(gb, 4) + 1;
+            sps.pcm.bit_depth_chroma = gb.readBits(4) + 1;  // get_bits(gb, 4) + 1;
+            sps.pcm.log2_min_pcm_cb_size = gb.readUEG() + 3; // get_ue_golomb_long(gb) + 3;
+            sps.pcm.log2_max_pcm_cb_size = sps.pcm.log2_min_pcm_cb_size +
+                                            gb.readUEG();// get_ue_golomb_long(gb);
+            if (HevcParser.FFMAX(sps.pcm.bit_depth, sps.pcm.bit_depth_chroma) > sps.bit_depth) {
+                Log.e(this.TAG,
+                       'PCM bit depth (${sps.pcm.bit_depth}, ${sps.pcm.bit_depth_chroma}) is greater than normal bit depth (${sps.bit_depth})');
+                return -1;
+            }
+            sps.pcm.loop_filter_disable_flag = gb.readBits(1); // get_bits1(gb);
+        }
+    
+        sps.nb_st_rps = gb.readUEG(); //  get_ue_golomb_long(gb);
+        if (sps.nb_st_rps > HevcParser.constants.HEVC_MAX_SHORT_TERM_REF_PIC_SETS) {
+            Log.e(this.TAG, 'Too many short term RPS: ${sps.nb_st_rps}.');
+            return -1;
+        }
+        for (i = 0; i < sps.nb_st_rps; i++) {
+            if (HevcParser.ff_hevc_decode_short_term_rps(gb, sps.st_rps[i], sps, 0) < 0)
+                return -1;
+        }
+    
+        sps.long_term_ref_pics_present_flag = gb.readBits(1); // get_bits1(gb);
+        if (sps.long_term_ref_pics_present_flag) {
+            sps.num_long_term_ref_pics_sps = gb.readUEG(); // get_ue_golomb_long(gb);
+            if (sps.num_long_term_ref_pics_sps > HevcParser.constants.HEVC_MAX_LONG_TERM_REF_PICS) {
+                Log.e(this.TAG, 'Too many long term ref pics: ${sps.num_long_term_ref_pics_sps}.');
+                return -1;
+            }
+            for (i = 0; i < sps.num_long_term_ref_pics_sps; i++) {
+                sps.lt_ref_pic_poc_lsb_sps[i]       = gb.readBits(sps.log2_max_poc_lsb);// get_bits(gb, sps.log2_max_poc_lsb);
+                sps.used_by_curr_pic_lt_sps_flag[i] = gb.readBits(1); //get_bits1(gb);
+            }
+        }
+    
+        sps.sps_temporal_mvp_enabled_flag          = gb.readBits(1); // get_bits1(gb);
+        sps.sps_strong_intra_smoothing_enable_flag = gb.readBits(1); // get_bits1(gb);
+        sps.vui.sar = { num: 0, den: 1 }; //
+        let vui_present =  gb.readBits(1); // get_bits1(gb);
+        if (vui_present) {
+            HevcParser.decode_vui(gb, apply_defdispwin, sps);
+        }
+    
+        if (gb.readBool()) { // get_bits1(gb) sps_extension_flag
+            sps.sps_range_extension_flag = gb.readBits(1);// get_bits1(gb);
+            gb.readBits(7);// skip_bits(gb, 7); //sps_extension_7bits = get_bits(gb, 7);
+            if (sps.sps_range_extension_flag) {
+                sps.transform_skip_rotation_enabled_flag = gb.readBits(1);// get_bits1(gb);
+                sps.transform_skip_context_enabled_flag  = gb.readBits(1);// get_bits1(gb);
+                sps.implicit_rdpcm_enabled_flag = gb.readBits(1); // get_bits1(gb);
+    
+                sps.explicit_rdpcm_enabled_flag = gb.readBits(1); // get_bits1(gb);
+    
+                sps.extended_precision_processing_flag = gb.readBits(1); // get_bits1(gb);
+                if (sps.extended_precision_processing_flag) {
+                    Log.w(this.TAG, 'extended_precision_processing_flag not yet implemented\n');
+                }
+    
+                sps.intra_smoothing_disabled_flag       = gb.readBits(1); // get_bits1(gb);
+                sps.high_precision_offsets_enabled_flag = gb.readBits(1); // get_bits1(gb);
+                if (sps.high_precision_offsets_enabled_flag) {
+                    Log.w(this.TAG, 'high_precision_offsets_enabled_flag not yet implemented\n');
+                }
+    
+                sps.persistent_rice_adaptation_enabled_flag = gb.readBits(1); // get_bits1(gb);
+    
+                sps.cabac_bypass_alignment_enabled_flag  = gb.readBits(1); // get_bits1(gb);
+                if (sps.cabac_bypass_alignment_enabled_flag) {
+                    Log.w(this.TAG, 'cabac_bypass_alignment_enabled_flag not yet implemented\n');
+                }
+            }
+        }
+
+        if (apply_defdispwin) {
+            sps.output_window.left_offset   += sps.vui.def_disp_win.left_offset;
+            sps.output_window.right_offset  += sps.vui.def_disp_win.right_offset;
+            sps.output_window.top_offset    += sps.vui.def_disp_win.top_offset;
+            sps.output_window.bottom_offset += sps.vui.def_disp_win.bottom_offset;
+        }
+    
+        let ow = sps.output_window;
+        if (ow.left_offset >= HevcParser.constants.INT_MAX - ow.right_offset     ||
+            ow.top_offset  >= HevcParser.constants.INT_MAX - ow.bottom_offset    ||
+            ow.left_offset + ow.right_offset  >= sps.width ||
+            ow.top_offset  + ow.bottom_offset >= sps.height) {
+            Log.w(this.TAG, 'Invalid cropping offsets: ${ow.left_offset}, ${ow.right_offset}, ${ow.top_offset}, ${ow.bottom_offset}');
+            // if (avctx->err_recognition & AV_EF_EXPLODE) {
+            //     return -1;
+            // }
+            Log.w(this.TAG, 'Displaying the whole video surface.');
+            // memset(ow, 0, sizeof(*ow));
+            // memset(&sps.pic_conf_win, 0, sizeof(sps.pic_conf_win));
+        }
+    
+        // Inferred parameters
+        sps.log2_ctb_size = sps.log2_min_cb_size +
+                             sps.log2_diff_max_min_coding_block_size;
+        sps.log2_min_pu_size = sps.log2_min_cb_size - 1;
+    
+        if (sps.log2_ctb_size > HevcParser.constants.HEVC_MAX_LOG2_CTB_SIZE) {
+            Log.e(this.TAG, 'CTB size out of range: 2^${log2_ctb_size}\n', sps.log2_ctb_size);
+            return -1;
+        }
+        if (sps.log2_ctb_size < 4) {
+            Log.e(this.TAG,
+                   'log2_ctb_size ${sps.log2_ctb_size} differs from the bounds of any known profile.');
+            // avpriv_request_sample(avctx, 'log2_ctb_size %d', sps.log2_ctb_size);
+            return -1;
+        }
+    
+        sps.ctb_width  = (sps.width  + (1 << sps.log2_ctb_size) - 1) >> sps.log2_ctb_size;
+        sps.ctb_height = (sps.height + (1 << sps.log2_ctb_size) - 1) >> sps.log2_ctb_size;
+        sps.ctb_size   = sps.ctb_width * sps.ctb_height;
+    
+        sps.min_cb_width  = sps.width  >> sps.log2_min_cb_size;
+        sps.min_cb_height = sps.height >> sps.log2_min_cb_size;
+        sps.min_tb_width  = sps.width  >> sps.log2_min_tb_size;
+        sps.min_tb_height = sps.height >> sps.log2_min_tb_size;
+        sps.min_pu_width  = sps.width  >> sps.log2_min_pu_size;
+        sps.min_pu_height = sps.height >> sps.log2_min_pu_size;
+        sps.tb_mask       = (1 << (sps.log2_ctb_size - sps.log2_min_tb_size)) - 1;
+    
+        sps.qp_bd_offset = 6 * (sps.bit_depth - 8);
+    
+        if (HevcParser.av_mod_uintp2(sps.width, sps.log2_min_cb_size) ||
+            HevcParser.av_mod_uintp2(sps.height, sps.log2_min_cb_size)) {
+            Log.e(this.TAG, 'Invalid coded frame dimensions.\n');
+            return -1;
+        }
+    
+        if (sps.max_transform_hierarchy_depth_inter > sps.log2_ctb_size - sps.log2_min_tb_size) {
+            Log.e(this.TAG, 'max_transform_hierarchy_depth_inter out of range: ${sps.max_transform_hierarchy_depth_inter}\n');
+            return -1;
+        }
+        if (sps.max_transform_hierarchy_depth_intra > sps.log2_ctb_size - sps.log2_min_tb_size) {
+            Log.e(this.TAG, 'max_transform_hierarchy_depth_intra out of range: ${sps.max_transform_hierarchy_depth_intra}\n');
+            return -1;
+        }
+        if (sps.log2_max_trafo_size > HevcParser.FFMIN(sps.log2_ctb_size, 5)) {
+            Log.e(this.TAG,
+                   'max transform block size out of range: ${sps.log2_max_trafo_size}');
+            return -1;
+        }
+    
+        if (gb.getBitsLeft() < 0) {
+            Log.e(this.TAG, 'Overread SPS by -${gb.getBitsLeft()} bits');
+            return -1;
+        }
 
         gb.destroy();
         gb = null;
@@ -214,7 +601,7 @@ class HevcParser {
             bit_depth: bit_depth,  // 8bit, 10bit, ...
             ref_frames: ref_frames,
             chroma_format: chroma_format,  // 4:2:0, 4:2:2, ...
-            chroma_format_string: SPSParser.getChromaFormatString(chroma_format),
+            chroma_format_string: HevcParser.getChromaFormatString(chroma_format),
 
             frame_rate: {
                 fixed: fps_fixed,
@@ -242,26 +629,27 @@ class HevcParser {
     
     static decode_profile_tier_level(gb, ptl) {
         //
-        if (gb.getBitsLeft() < 2+1+5 + 32 + 4 + 43 + 1) {
+        if (gb.getBitsLeft() < 2 + 1 + 5 + 32 + 4 + 43 + 1) {
             return -1;
         }
-
+        let i;
         ptl.profile_space = gb.readBits(2);
         ptl.tier_flag     = gb.readBits(1);
-        ptl.profile_idc   = gb.readBits(5);
+        let profile_idc   = gb.readBits(5);
+        ptl.profile_idc   = profile_idc;
         //
-        if(profile_idc === FF_PROFILE_HEVC_MAIN) {
+        if (profile_idc === HevcParser.constants.FF_PROFILE_HEVC_MAIN) {
             Log.v(this.TAG, 'Main profile bitstream');
-        } else if(profile_idc === FF_PROFILE_HEVC_MAIN_10) {
+        } else if (profile_idc === HevcParser.constants.FF_PROFILE_HEVC_MAIN_10) {
             Log.v(this.TAG, 'Main 10 profile bitstream');
-        } else if(profile_idc === FF_PROFILE_HEVC_MAIN_STILL_PICTURE) {
+        } else if (profile_idc === HevcParser.constants.FF_PROFILE_HEVC_MAIN_STILL_PICTURE) {
             Log.v(this.TAG, 'Main Still Picture profile bitstream');
-        } else if(profile_idc === FF_PROFILE_HEVC_REXT) {
+        } else if (profile_idc === HevcParser.constants.FF_PROFILE_HEVC_REXT) {
             Log.v(this.TAG, 'Range Extension profile bitstream');
         } else {
-            Log.v(this.TAG, 'Unknown HEVC profile: ${profile_idc}', );
+            Log.v(this.TAG, 'Unknown HEVC profile: ${profile_idc}');
         }
-        //
+        // ERROR of profile_idc
         for (i = 0; i < 32; i++) {
             ptl.profile_compatibility_flag[i] = gb.readBits(1);
     
@@ -274,59 +662,59 @@ class HevcParser {
         ptl.interlaced_source_flag     = gb.readBits(1);
         ptl.non_packed_constraint_flag = gb.readBits(1);
         ptl.frame_only_constraint_flag = gb.readBits(1);
-        //
-        switch(profile_idc) {
-        case 4:
-        case 5:
-        case 6:
-        case 7:
-        case 8:
-        case 9:
-        case 10: {
-            if(!ptl.profile_compatibility_flag[profile_idc]) {
+        // 
+        switch (profile_idc) {
+            case 0x04:
+            case 0x05:
+            case 0x06:
+            case 7:
+            case 8:
+            case 9:
+            case 10: {
+                if (!ptl.profile_compatibility_flag[profile_idc]) {
+                    break;
+                }
+                ptl.max_12bit_constraint_flag        = gb.readBits(1);
+                ptl.max_10bit_constraint_flag        = gb.readBits(1);
+                ptl.max_8bit_constraint_flag         = gb.readBits(1);
+                ptl.max_422chroma_constraint_flag    = gb.readBits(1);
+                ptl.max_420chroma_constraint_flag    = gb.readBits(1);
+                ptl.max_monochrome_constraint_flag   = gb.readBits(1);
+                ptl.intra_constraint_flag            = gb.readBits(1);
+                ptl.one_picture_only_constraint_flag = gb.readBits(1);
+                ptl.lower_bit_rate_constraint_flag   = gb.readBits(1);
+                //
+                if (profile_idc === 5 || profile_idc === 9 || profile_idc === 10) {
+                    ptl.max_14bit_constraint_flag = gb.readBits(1);
+                    gb.readBits(32); // XXX_reserved_zero_33bits[0..32]
+                    gb.readBits(1);
+                } else {
+                    gb.readBits(32); // XXX_reserved_zero_34bits[0..33]
+                    gb.readBits(2); // XXX_reserved_zero_34bits[0..33]
+                }
                 break;
             }
-            ptl.max_12bit_constraint_flag        = gb.readBits(1);
-            ptl.max_10bit_constraint_flag        = gb.readBits(1);
-            ptl.max_8bit_constraint_flag         = gb.readBits(1);
-            ptl.max_422chroma_constraint_flag    = gb.readBits(1);
-            ptl.max_420chroma_constraint_flag    = gb.readBits(1);
-            ptl.max_monochrome_constraint_flag   = gb.readBits(1);
-            ptl.intra_constraint_flag            = gb.readBits(1);
-            ptl.one_picture_only_constraint_flag = gb.readBits(1);
-            ptl.lower_bit_rate_constraint_flag   = gb.readBits(1);
-            //
-            if(profile_idc === 5 || profile_idc === 9 || profile_idc === 10) {
-                ptl.max_14bit_constraint_flag = gb.readBits(1);
-                gb.readBits(32); // XXX_reserved_zero_33bits[0..32]
-                gb.readBits(1);
-            } else {
-                gb.readBits(32); // XXX_reserved_zero_34bits[0..33]
-                gb.readBits(2); // XXX_reserved_zero_34bits[0..33]
-            }
-            break;
-        }
-        case 2: {
-            if(!ptl.profile_compatibility_flag[ptl.profile_idc]) {
+            case 2: {
+                if (!ptl.profile_compatibility_flag[ptl.profile_idc]) {
+                    break;
+                }
+                //
+                gb.readBits(7);
+                ptl.one_picture_only_constraint_flag = gb.readBits(1);
+                gb.readBits(1); // XXX_reserved_zero_35bits[0..34]
+                gb.readBits(35); // XXX_reserved_zero_35bits[0..34]
                 break;
             }
-            //
-            gb.readBits(7);
-            ptl.one_picture_only_constraint_flag = gb.readBits(1);
-            gb.readBits(1); // XXX_reserved_zero_35bits[0..34]
-            gb.readBits(35); // XXX_reserved_zero_35bits[0..34]
-            break;
-        }
-        default: {
-            gb.readBits(32); // XXX_reserved_zero_43bits[0..42]
-            gb.readBits(11); // XXX_reserved_zero_43bits[0..42]
-        }
+            default: {
+                gb.readBits(32); // XXX_reserved_zero_43bits[0..42]
+                gb.readBits(11); // XXX_reserved_zero_43bits[0..42]
+            }
         }
         //
-        if(ptl.profile_idc === 1 || ptl.profile_idc === 2 || ptl.profile_idc === 3 ||
+        if (ptl.profile_idc === 1 || ptl.profile_idc === 2 || ptl.profile_idc === 3 ||
             ptl.profile_idc === 4 || ptl.profile_idc === 5 || ptl.profile_idc === 9) {
             //
-            if(ptl.profile_compatibility_flag[profile_idc]) {
+            if (ptl.profile_compatibility_flag[profile_idc]) {
                 ptl.inbld_flag = gb.readBits(1);
             } else {
                 gb.readBits(1); // // skip 1bit
@@ -339,9 +727,9 @@ class HevcParser {
     }
 
     static parse_ptl(gb, ptl, max_num_sub_layers) {
-        var i;
-        if (decode_profile_tier_level(gb) < 0 ||
-            gb.getBitsLeft() < 8 + (8*2 * (max_num_sub_layers - 1 > 0))) {
+        let i;
+        if (HevcParser.decode_profile_tier_level(gb) < 0 ||
+            gb.getBitsLeft() < 8 + (8 * 2 * (max_num_sub_layers - 1 > 0))) {
             Log.e(this.TAG,  'PTL information too short');
             return -1;
         }
@@ -353,7 +741,7 @@ class HevcParser {
             ptl.sub_layer_level_present_flag[i]   = gb.readBits(1);
         }
         //
-        if (max_num_sub_layers - 1> 0) {
+        if (max_num_sub_layers - 1 > 0) {
             for (i = max_num_sub_layers - 1; i < 8; i++) {
                 // skip_bits(gb, 2); // reserved_zero_2bits[i]
                 gb.readBits(2); // reserved_zero_2bits[i]
@@ -362,14 +750,14 @@ class HevcParser {
         //
         for (i = 0; i < max_num_sub_layers - 1; i++) {
             if (ptl.sub_layer_profile_present_flag[i] &&
-                decode_profile_tier_level(gb, ptl.sub_layer_ptl[i]) ) {
+                HevcParser.decode_profile_tier_level(gb, ptl.sub_layer_ptl[i]) < 0) {
                 //
-                Log.e(this.TAG, "PTL information for sublayer ${i} too short.");
+                Log.e(this.TAG, 'PTL information for sublayer ${i} too short.');
                 return -1;
             }
             if (ptl.sub_layer_level_present_flag[i]) {
                 if (gb.getBitsLeft() < 8) {
-                    Log.e(this.TAG, "Not enough data for sublayer ${i} level_idc");
+                    Log.e(this.TAG, 'Not enough data for sublayer ${i} level_idc');
                     return -1;
                 } else {
                     ptl.sub_layer_ptl[i].level_idc = gb.readBits(8);
@@ -380,7 +768,7 @@ class HevcParser {
     }
 
     static decode_sublayer_hrd(gb, nb_cpb, subpic_params_present) {
-        var i;
+        let i;
 
         for (i = 0; i < nb_cpb; i++) {
             gb.readUEG(); // get_ue_golomb_long(gb); // bit_rate_value_minus1
@@ -396,9 +784,9 @@ class HevcParser {
 
     static decode_hrd(gb, common_inf_present, vps_max_sub_layers) {
         //
-        var nal_params_present = 0, vcl_params_present = 0;
-        var subpic_params_present = 0;
-        var i;
+        let nal_params_present = 0, vcl_params_present = 0;
+        let subpic_params_present = 0;
+        let i;
 
         if (common_inf_present) {
             nal_params_present = gb.readBits(1); //get_bits1(gb);
@@ -427,10 +815,10 @@ class HevcParser {
             }
         }
 
-        for (i = 0; i < max_sublayers; i++) {
-            var low_delay = 0;
-            var nb_cpb = 1;
-            var fixed_rate = gb.readBits(1); //get_bits1(gb);
+        for (i = 0; i < vps_max_sub_layers; i++) {
+            let low_delay = 0;
+            let nb_cpb = 1;
+            let fixed_rate = gb.readBits(1); //get_bits1(gb);
 
             if (!fixed_rate) {
                 fixed_rate = gb.readBits(1); // get_bits1(gb);
@@ -445,17 +833,17 @@ class HevcParser {
             if (!low_delay) {
                 nb_cpb = gb.readUEG() + 1; // get_ue_golomb_long(gb) + 1;
                 if (nb_cpb < 1 || nb_cpb > 32) {
-                    Log.e(this.TAG, "nb_cpb ${nb_cpb} invalid\n");
-                    return -1;// AVERROR_INVALIDDATA;
+                    Log.e(this.TAG, 'nb_cpb ${nb_cpb} invalid\n');
+                    return -1;// -1;
                 }
             }
 
             if (nal_params_present) {
-                decode_sublayer_hrd(gb, nb_cpb, subpic_params_present);
+                HevcParser.decode_sublayer_hrd(gb, nb_cpb, subpic_params_present);
             }
 
             if (vcl_params_present) {
-                decode_sublayer_hrd(gb, nb_cpb, subpic_params_present);
+                HevcParser.decode_sublayer_hrd(gb, nb_cpb, subpic_params_present);
             }
         }
         return 0;
@@ -464,9 +852,11 @@ class HevcParser {
     static parseVPS(uint8array, vps) {
         let rbsp = HevcParser._ebsp2rbsp(uint8array);
         let gb = new ExpGolomb(rbsp);
+        let i;
+        let j;
 
-        vps.vps_video_parameter_set_id = gb.readBits(4); // u(4)
-        vps_id = vps.vps_video_parameter_set_id;
+        let vps_id =  gb.readBits(4); // u(4)
+        vps.vps_video_parameter_set_id = vps_id;
         vps.vps_base_layer_internal_flag = gb.readBits(1); // u(1)
         vps.vps_base_layer_available_flag = gb.readBits(1); // u(1)
         //
@@ -475,31 +865,31 @@ class HevcParser {
         vps.vps_temporal_id_nesting_flag = gb.readBits(1); // u(1)
 
         let vps_reserved_0xffff_16bits = gb.readBits(16); // u(16)
-        if(vps_reserved_0xffff_16bits !== 0xffff) {
-            // error: "vps_reserved_ffff_16bits is not 0xffff\n"
+        if (vps_reserved_0xffff_16bits !== 0xffff) {
+            // error: 'vps_reserved_ffff_16bits is not 0xffff\n'
         }
         // 
-        if( vps.vps_max_sub_layers > HEVC_MAX_SUB_LAYERS) {
+        if (vps.vps_max_sub_layers > HevcParser.constants.HEVC_MAX_SUB_LAYERS) {
             // error: vps_max_sub_layers out of range
         }
         //
-        parse_ptl(gb, vps.ptl, vps.vps_max_sub_layers);
+        HevcParser.parse_ptl(gb, vps.ptl, vps.vps_max_sub_layers);
         //
-        vps_sub_layer_ordering_info_present_flag = gb.readBits(1);
+        let vps_sub_layer_ordering_info_present_flag = gb.readBits(1);
         // 
-        i = vps_sub_layer_ordering_info_present_flag ? 0 : vps_max_sub_layers - 1;
+        i = vps_sub_layer_ordering_info_present_flag ? 0 : vps.vps_max_sub_layers - 1;
 
         for (; i < vps.vps_max_sub_layers; i++) {
             vps.vps_max_dec_pic_buffering[i] = gb.readUEG() + 1;    // get_ue_golomb_long(gb) + 1;
             vps.vps_num_reorder_pics[i]      = gb.readUEG();        // get_ue_golomb_long(gb);
             vps.vps_max_latency_increase[i]  = gb.readUEG() - 1;    // get_ue_golomb_long(gb) - 1;
     
-            if (vps.vps_max_dec_pic_buffering[i] > HEVC_MAX_DPB_SIZE || !vps.vps_max_dec_pic_buffering[i]) {
-                Log.e(this.TAG, "vps_max_dec_pic_buffering_minus1 out of range: ${vps.vps_max_dec_pic_buffering[i] - 1}");
+            if (vps.vps_max_dec_pic_buffering[i] > HevcParser.constants.HEVC_MAX_DPB_SIZE || !vps.vps_max_dec_pic_buffering[i]) {
+                Log.e(this.TAG, 'vps_max_dec_pic_buffering_minus1 out of range: ${vps.vps_max_dec_pic_buffering[i] - 1}');
                 // goto err;
             }
             if (vps.vps_num_reorder_pics[i] > vps.vps_max_dec_pic_buffering[i] - 1) {
-                Log.e(this.TAG, "vps_max_num_reorder_pics out of range: ${vps.vps_num_reorder_pics[i]}");
+                Log.e(this.TAG, 'vps_max_num_reorder_pics out of range: ${vps.vps_num_reorder_pics[i]}');
                 // if (avctx->err_recognition & AV_EF_EXPLODE)
                 //     goto err;
             }
@@ -510,9 +900,9 @@ class HevcParser {
         //
 
         if (vps.vps_num_layer_sets < 1 || vps.vps_num_layer_sets > 1024 ||
-            (vps.vps_num_layer_sets - 1) * (vps.vps_max_layer_id + 1) > gb.getBitsLeft()  ) { 
+            (vps.vps_num_layer_sets - 1) * (vps.vps_max_layer_id + 1) > gb.getBitsLeft()) { 
                 // get_bits_left(gb)
-                Log.e(this.TAG, "too many layer_id_included_flags");
+            Log.e(this.TAG, 'too many layer_id_included_flags');
             // goto err;
         }
     
@@ -533,27 +923,27 @@ class HevcParser {
             }
             vps.vps_num_hrd_parameters = gb.readUEG();// get_ue_golomb_long(gb);
             if (vps.vps_num_hrd_parameters > vps.vps_num_layer_sets) {
-                Log.e(this.TAG, "vps_num_hrd_parameters ${vps.vps_num_hrd_parameters} is invalid.");
+                Log.e(this.TAG, 'vps_num_hrd_parameters ${vps.vps_num_hrd_parameters} is invalid.');
                 // goto err;
             }
 
             for (i = 0; i < vps.vps_num_hrd_parameters; i++) {
-                var common_inf_present = 1;
+                let common_inf_present = 1;
     
                 gb.readUEG(); // get_ue_golomb_long(gb); // hrd_layer_set_idx
                 if (i) {
                     common_inf_present = gb.readBits(1); // get_bits1(gb);
                 }
-                decode_hrd(gb, common_inf_present, vps.vps_max_sub_layers);
+                HevcParser.decode_hrd(gb, common_inf_present, vps.vps_max_sub_layers);
             }
         }
         gb.readBits(1); // get_bits1(gb); /* vps_extension_flag */
     
         if (gb.getBitsLeft() < 0) {
-            Log.e(this.TAG, "Overread VPS by ${- gb.getBitsLeft()} bits.");
-            if (ps.vps_list[vps_id]) {
-                // goto err;
-            }
+            Log.e(this.TAG, 'Overread VPS by ${- gb.getBitsLeft()} bits.');
+            // if (ps.vps_list[vps_id]) {
+            //     // goto err;
+            // }
         }
         /*
         if (ps.vps_list[vps_id] &&
@@ -624,13 +1014,13 @@ class HevcParser {
 
     static isKeyFrame(nal_type) {
         switch (nal_type) {
-        case HEVC_NAL_UNIT_CODED_SLICE_BLA_W_LP:
-        case HEVC_NAL_UNIT_CODED_SLICE_BLA_W_RADL:
-        case HEVC_NAL_UNIT_CODED_SLICE_BLA_N_LP:
-        case HEVC_NAL_UNIT_CODED_SLICE_IDR_W_RADL:
-        case HEVC_NAL_UNIT_CODED_SLICE_IDR_N_LP:
-        case HEVC_NAL_UNIT_CODED_SLICE_CRA:
-            return true;
+            case HevcParser.constants.HEVC_NAL_UNIT_CODED_SLICE_BLA_W_LP:
+            case HevcParser.constants.HEVC_NAL_UNIT_CODED_SLICE_BLA_W_RADL:
+            case HevcParser.constants.HEVC_NAL_UNIT_CODED_SLICE_BLA_N_LP:
+            case HevcParser.constants.HEVC_NAL_UNIT_CODED_SLICE_IDR_W_RADL:
+            case HevcParser.constants.HEVC_NAL_UNIT_CODED_SLICE_IDR_N_LP:
+            case HevcParser.constants.HEVC_NAL_UNIT_CODED_SLICE_CRA:
+                return true;
         }
 
         return false;
@@ -639,4 +1029,4 @@ class HevcParser {
 
 }
 
-export default SPSParser;
+export default HevcParser;
