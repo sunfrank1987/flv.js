@@ -1099,6 +1099,7 @@ class FLVDemuxer {
     }
 
     _parseHEVCVideoPacket(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition, frameType) {
+        Log.i(this.TAG, 'Flv: _parseHEVCVideoPacket ${dataSize}');
         if (dataSize < 4) {
             Log.w(this.TAG, 'Flv: Invalid HEVC packet, missing HEVCPacketType or/and CompositionTime');
             return;
@@ -1108,6 +1109,7 @@ class FLVDemuxer {
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
 
         let packetType = v.getUint8(0); // (v.getUint8(0) & 0x7E) >> 1; // type = (nal_start[0] & 0x7E) >> 1;
+        Log.i(this.TAG, 'Flv: packetType: ${packetType}.');
 
         let cts_unsigned = v.getUint32(0, !le) & 0x00FFFFFF;
         let cts = (cts_unsigned << 8) >> 8;  // convert to 24-bit signed int
@@ -1124,9 +1126,11 @@ class FLVDemuxer {
         }
     }
 
-    _parseHEVCDecoderConfigurationRecord(arrayBuffer, dataOffset, dataSize) {
+    _parseHevcDecoderConfigurationRecord(arrayBuffer, dataOffset, dataSize) {
+        Log.i(this.TAG, `Flv: Invalid HEVCDecoderConfigurationRecord dataSize: ${dataSize}.`);
+
         if (dataSize < 7) {
-            Log.w(this.TAG, 'Flv: Invalid AVCDecoderConfigurationRecord, lack of data!');
+            Log.w(this.TAG, 'Flv: Invalid HEVCDecoderConfigurationRecord, lack of data!');
             return;
         }
 
@@ -1148,12 +1152,14 @@ class FLVDemuxer {
             meta.duration = this._duration;
         } else {
             if (typeof meta.hvcc !== 'undefined') {
-                Log.w(this.TAG, 'Found another AVCDecoderConfigurationRecord!');
+                Log.w(this.TAG, 'Found another HEVCDecoderConfigurationRecord!');
             }
         }
         // Parse HEVC 
         /* unsigned int(8) configurationVersion = 1; */
         let version = v.getUint8(0);  // configurationVersion
+        Log.i(this.TAG, `Flv: version: ${version}.`);
+
         /*
 	     * unsigned int(2) general_profile_space;
 	     * unsigned int(1) general_tier_flag;
@@ -1167,65 +1173,89 @@ class FLVDemuxer {
             this._onError(DemuxErrors.FORMAT_ERROR, 'Flv: Invalid HEVC DecoderConfigurationRecord');
             return;
         }
-
+        
         /* unsigned int(32) general_profile_compatibility_flags; */
-        let general_profile_compatibility_flags = v.getUint32(3, !le); // offset = 3 + 4 = 7
+        let general_profile_compatibility_flags = v.getUint32(2, !le); // offset = 2 + 4 = 6
+
         /* unsigned int(48) general_constraint_indicator_flags; */
         // avio_wb32(pb, hvcc->general_constraint_indicator_flags >> 16);
 	    // avio_wb16(pb, hvcc->general_constraint_indicator_flags);
-        let general_constraint_indicator_flags = v.getUint32(7, !le) << 16 | v.getUint16(11, !le); // 7 + 4 + 2
+        let general_constraint_indicator_flags = v.getUint32(6, !le) << 16 | v.getUint16(10, !le); // 6 + 4 + 2
+
         /* unsigned int(8) general_level_idc; */
-        let general_level_idc = v.getUint8(13); // 13 + 1
+        let general_level_idc = v.getUint8(12); // 12 + 1
+
         /*
         * bit(4) reserved = ‘1111’b;
         * unsigned int(12) min_spatial_segmentation_idc;
         */
-        let min_spatial_segmentation_idc = v.getUint16(14, !le) & 0x0FFF;
+        let min_spatial_segmentation_idc = v.getUint16(13, !le) & 0x0FFF;
         //
         /*
         * bit(6) reserved = ‘111111’b;
         * unsigned int(2) parallelismType;
         * 0xfc
         */
-        let parallelismType = v.getUint8(16) & 0x03;
+        let parallelismType = v.getUint8(15) & 0x03;
+
         /*
         * bit(6) reserved = ‘111111’b;
         * unsigned int(2) chromaFormat;
         */
-        let chromaFormat = v.getUint8(17) & 0x03;
+        let chromaFormat = v.getUint8(16) & 0x03;
         /*
         * bit(5) reserved = ‘11111’b;
         * unsigned int(3) bitDepthLumaMinus8;
         */
-        let bitDepthLumaMinus8 = v.getUint8(18) & 0x07;
+        let bitDepthLumaMinus8 = v.getUint8(17) & 0x07;
         /*
         * bit(5) reserved = ‘11111’b;
         * unsigned int(3) bitDepthChromaMinus8;
         */
-        let bitDepthChromaMinus8 = v.getUint8(19) & 0x07;
+        let bitDepthChromaMinus8 = v.getUint8(18) & 0x07;
         /* bit(16) avgFrameRate; */
-        let avgFrameRate = v.getUint16(20, !le);
+        let avgFrameRate = v.getUint16(19, !le);
         /*
         * bit(2) constantFrameRate;
         * bit(3) numTemporalLayers;
         * bit(1) temporalIdNested;
         * unsigned int(2) lengthSizeMinusOne;
         */
-        var tmpUint8 = v.getUint8(22);
+        var tmpUint8 = v.getUint8(21);
         let constantFrameRate = tmpUint8 >> 6 & 0x03;
         let numTemporalLayers = tmpUint8 >> 3 & 0x07;
         let temporalIdNested = tmpUint8 >> 2 & 0x01;
         let lengthSizeMinusOne = tmpUint8 & 0x03;
         // 
         this._naluLengthSize = lengthSizeMinusOne + 1; // (v.getUint8(4) & 3) + 1;  // lengthSizeMinusOne
+        //
+        Log.i(this.TAG, `Flv: general_profile_space: ${general_profile_space}.`);
+        Log.i(this.TAG, `Flv: general_tier_flag: ${general_tier_flag}.`);
+        Log.i(this.TAG, `Flv: general_profile_idc: ${general_profile_idc}.`);
+        Log.i(this.TAG, `Flv: general_profile_compatibility_flags: ${general_profile_compatibility_flags}.`);
+        Log.i(this.TAG, `Flv: general_constraint_indicator_flags: ${general_constraint_indicator_flags}.`);
+        Log.i(this.TAG, `Flv: general_level_idc: ${general_level_idc}.`);
+        Log.i(this.TAG, `Flv: min_spatial_segmentation_idc: ${min_spatial_segmentation_idc}.`);
+        Log.i(this.TAG, `Flv: parallelismType: ${parallelismType}.`);
+        Log.i(this.TAG, `Flv: chromaFormat: ${chromaFormat}.`);
+        Log.i(this.TAG, `Flv: bitDepthLumaMinus8: ${bitDepthLumaMinus8}.`);
+        Log.i(this.TAG, `Flv: bitDepthChromaMinus8: ${bitDepthChromaMinus8}.`);
+        Log.i(this.TAG, `Flv: avgFrameRate: ${avgFrameRate}.`);
+        Log.i(this.TAG, `Flv: constantFrameRate: ${constantFrameRate}.`);
+        Log.i(this.TAG, `Flv: numTemporalLayers: ${numTemporalLayers}.`);
+        Log.i(this.TAG, `Flv: temporalIdNested: ${temporalIdNested}.`);
+        Log.i(this.TAG, `Flv: _naluLengthSize: ${this._naluLengthSize}.`);
+
+
         if (this._naluLengthSize !== 3 && this._naluLengthSize !== 4) {  // holy shit!!!
             this._onError(DemuxErrors.FORMAT_ERROR, `Flv: Strange NaluLengthSizeMinusOne: ${this._naluLengthSize - 1}`);
             return;
         }
         /* unsigned int(8) numOfArrays; */
-        let numOfArrays = v.getUint8(23);
+        let numOfArrays = v.getUint8(22);
+        Log.i(this.TAG, `Flv: numOfArrays: ${numOfArrays}.`);
 
-        let offset = 24;
+        let offset = 22;
         // vps -> 32
         // sps -> 33
         // pps -> 34
@@ -1235,13 +1265,15 @@ class FLVDemuxer {
             * unsigned int(1) reserved = 0;
             * unsigned int(6) NAL_unit_type;
             */
-            tmpUint8 = v.getUint8(24); // 1
+            tmpUint8 = v.getUint8(offset); // 1
+            offset += 1;
             //
             var array_completeness = tmpUint8 >> 7 & 0x01;
             var NAL_unit_type = tmpUint8 & 0x3F;
-            var numNalus = v.getUint16(25, !le); // 2
+            var numNalus = v.getUint16(offset, !le); // 2
+            offset += 2;
             //
-            offset += 3;
+            // offset += 3;
             if(NAL_unit_type === 32) {
                // VPS
                if (numNalus === 0) {
@@ -1387,7 +1419,7 @@ class FLVDemuxer {
         this._onTrackMetadata('video', meta);
     }
 
-    _parseHEVCVideoData(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition, frameType, cts) {
+    _parseHevcVideoData(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition, frameType, cts) {
         // 
         let le = this._littleEndian;
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
