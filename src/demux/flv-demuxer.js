@@ -19,6 +19,9 @@
 import Log from '../utils/logger.js';
 import AMF from './amf-parser.js';
 import SPSParser from './sps-parser.js';
+import HevcParser from './hevc-parser.js';
+import HevcVps from './hevc-parser.js';
+import HevcSps from './hevc-parser.js';
 import DemuxErrors from './demux-errors.js';
 import MediaInfo from '../core/media-info.js';
 import {IllegalStateException} from '../utils/exception.js';
@@ -269,7 +272,7 @@ class FLVDemuxer {
         if (!this._onError || !this._onMediaInfo || !this._onTrackMetadata || !this._onDataAvailable) {
             throw new IllegalStateException('Flv: onError & onMediaInfo & onTrackMetadata & onDataAvailable callback must be specified');
         }
-
+        Log.i(this.TAG, `parseChunks: ${chunk}`);
         let offset = 0;
         let le = this._littleEndian;
 
@@ -298,6 +301,7 @@ class FLVDemuxer {
 
         while (offset < chunk.byteLength) {
             this._dispatch = true;
+            Log.i(this.TAG, `chunk.byteLength: ${chunk.byteLength}`);
 
             let v = new DataView(chunk, offset);
 
@@ -821,6 +825,7 @@ class FLVDemuxer {
     }
 
     _parseVideoData(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition) {
+        Log.d(this.TAG, 'dataSize: ${dataSize}');
         if (dataSize <= 1) {
             Log.w(this.TAG, 'Flv: Invalid video packet, missing VideoData payload!');
             return;
@@ -836,6 +841,7 @@ class FLVDemuxer {
 
         let frameType = (spec & 240) >>> 4;
         let codecId = spec & 15;
+        Log.d(this.TAG, 'codecId: ${codecId}');
 
         if (codecId == 7) {
             this._parseAVCVideoPacket(arrayBuffer, dataOffset + 1, dataSize - 1, tagTimestamp, tagPosition, frameType);
@@ -1126,6 +1132,19 @@ class FLVDemuxer {
         }
     }
 
+    _reverse32Bits(bits)
+    {
+        let count = 32;
+        let reverse_bits = 0;
+        
+        while (bits != 0) {
+            reverse_bits = (reverse_bits << 1) | (bits & 1);
+            bits >>= 1;
+            count--;
+        }
+        return (count < 32) ? (reverse_bits << count) : 0;
+    }
+
     _parseHevcDecoderConfigurationRecord(arrayBuffer, dataOffset, dataSize) {
         Log.i(this.TAG, `Flv: Invalid HEVCDecoderConfigurationRecord dataSize: ${dataSize}.`);
 
@@ -1133,6 +1152,8 @@ class FLVDemuxer {
             Log.w(this.TAG, 'Flv: Invalid HEVCDecoderConfigurationRecord, lack of data!');
             return;
         }
+        
+        let codecString = 'hev1.';
 
         let meta = this._videoMetadata;
         let track = this._videoTrack;
@@ -1165,10 +1186,12 @@ class FLVDemuxer {
 	     * unsigned int(1) general_tier_flag;
 	     * unsigned int(5) general_profile_idc;
 	    */
-        var tmp = v.getUint8(1);
+        let tmp = v.getUint8(1);
         let general_profile_space = tmp >> 6 & 0x03; //  v.getUint8(2); 
-        let general_tier_flag = tmp >> 5 &0x01; // v.getUint8(1); 
+        let general_tier_flag = tmp >> 5 & 0x01; // v.getUint8(1); 
         let general_profile_idc = tmp & 0x1f;// v.getUint8(5); 
+
+
         if (version !== 1 || general_profile_idc === 0) {
             this._onError(DemuxErrors.FORMAT_ERROR, 'Flv: Invalid HEVC DecoderConfigurationRecord');
             return;
@@ -1179,12 +1202,12 @@ class FLVDemuxer {
 
         /* unsigned int(48) general_constraint_indicator_flags; */
         // avio_wb32(pb, hvcc->general_constraint_indicator_flags >> 16);
-	    // avio_wb16(pb, hvcc->general_constraint_indicator_flags);
+        // avio_wb16(pb, hvcc->general_constraint_indicator_flags);
         let general_constraint_indicator_flags = v.getUint32(6, !le) << 16 | v.getUint16(10, !le); // 6 + 4 + 2
 
         /* unsigned int(8) general_level_idc; */
         let general_level_idc = v.getUint8(12); // 12 + 1
-
+        
         /*
         * bit(4) reserved = ‘1111’b;
         * unsigned int(12) min_spatial_segmentation_idc;
@@ -1221,7 +1244,7 @@ class FLVDemuxer {
         * bit(1) temporalIdNested;
         * unsigned int(2) lengthSizeMinusOne;
         */
-        var tmpUint8 = v.getUint8(21);
+        let tmpUint8 = v.getUint8(21);
         let constantFrameRate = tmpUint8 >> 6 & 0x03;
         let numTemporalLayers = tmpUint8 >> 3 & 0x07;
         let temporalIdNested = tmpUint8 >> 2 & 0x01;
@@ -1229,10 +1252,68 @@ class FLVDemuxer {
         // 
         this._naluLengthSize = lengthSizeMinusOne + 1; // (v.getUint8(4) & 3) + 1;  // lengthSizeMinusOne
         //
+        /*
+        CODECSTRING = CODEC "." PROFILE "." LEVEL "." CONSTRAINTS
+        CODEC = ("h" "e" "v" "1" / "h" "v" "c" "1" )
+        PROFILE = PROFILE_SPACE PROFILE_IDC "." PROFILE_COMPATIBILITY
+        PROFILE_SPACE = "" / ALPHA
+        PROFILE_IDC = 1*3(DIGIT)
+        PROFILE_COMPATIBILITY = 1*8(HEXDIG)
+        LEVEL = TIER LEVEL_IDC
+        TIER = "L" / "H"
+        LEVEL_IDC = 1*3(DIGIT)
+        CONSTRAINTS = 2(HEXDIG) [ "." CONSTRAINTS ]
+
+        https://tools.ietf.org/html/rfc5234
+        
+        Ex:
+        Main 3.1 Main None hvc1.1.6.L93.00 hev1.1.6.L93.00
+        progressive_source, frame_only, non_packed hvc1.1.6.L93.B0 hev1.1.6.L93.B0
+
+        */
+       
+        if (general_profile_space === 1) {
+            codecString += 'A';
+        } else if (general_profile_space === 2) {
+            codecString += 'B';
+        } else if (general_profile_space === 3) {
+            codecString += 'C';
+        }
+        codecString += general_profile_idc;
+        codecString += '.';
+        //
+        // general_profile_compatibility_flags
+        // let sps = new Uint8Array(arrayBuffer, dataOffset + offset, nalUnitLength);
+        let gpcfTmp = this._reverse32Bits(general_profile_compatibility_flags);
+        let gpcfTmpNum = new Number(gpcfTmp);
+
+        codecString += gpcfTmpNum.toString(16);// this._reverse32Bits(general_profile_compatibility_flags); // to Hex
+        codecString += '.';
+        //
+        if (general_tier_flag === 0) {
+            codecString += 'L';
+        } else if (general_tier_flag === 1) {
+            codecString += 'H';
+        }
+        codecString += general_level_idc;
+        // 64bits
+        let constraints = general_constraint_indicator_flags;
+        while (constraints != 0 && ((constraints & 0xFF) === 0)) {
+            constraints >>= 8;
+        }
+
+        let constraintsNum = new Number(constraints);
+        //
+        codecString += '.';
+        codecString += constraintsNum.toString(16);
+
+        //
         Log.i(this.TAG, `Flv: general_profile_space: ${general_profile_space}.`);
         Log.i(this.TAG, `Flv: general_tier_flag: ${general_tier_flag}.`);
         Log.i(this.TAG, `Flv: general_profile_idc: ${general_profile_idc}.`);
         Log.i(this.TAG, `Flv: general_profile_compatibility_flags: ${general_profile_compatibility_flags}.`);
+        Log.i(this.TAG, `Flv: gpcfTmp: ${gpcfTmp}.`);
+
         Log.i(this.TAG, `Flv: general_constraint_indicator_flags: ${general_constraint_indicator_flags}.`);
         Log.i(this.TAG, `Flv: general_level_idc: ${general_level_idc}.`);
         Log.i(this.TAG, `Flv: min_spatial_segmentation_idc: ${min_spatial_segmentation_idc}.`);
@@ -1245,6 +1326,8 @@ class FLVDemuxer {
         Log.i(this.TAG, `Flv: numTemporalLayers: ${numTemporalLayers}.`);
         Log.i(this.TAG, `Flv: temporalIdNested: ${temporalIdNested}.`);
         Log.i(this.TAG, `Flv: _naluLengthSize: ${this._naluLengthSize}.`);
+        Log.i(this.TAG, `Flv: codecString: ${codecString}.`);
+        
 
 
         if (this._naluLengthSize !== 3 && this._naluLengthSize !== 4) {  // holy shit!!!
@@ -1255,11 +1338,11 @@ class FLVDemuxer {
         let numOfArrays = v.getUint8(22);
         Log.i(this.TAG, `Flv: numOfArrays: ${numOfArrays}.`);
 
-        let offset = 22;
+        let offset = 23;
         // vps -> 32
         // sps -> 33
         // pps -> 34
-        for (var i = 0; i < numOfArrays; i++) {
+        for (let i = 0; i < numOfArrays; i++) {
             /*
             * bit(1) array_completeness;
             * unsigned int(1) reserved = 0;
@@ -1268,15 +1351,19 @@ class FLVDemuxer {
             tmpUint8 = v.getUint8(offset); // 1
             offset += 1;
             //
-            var array_completeness = tmpUint8 >> 7 & 0x01;
-            var NAL_unit_type = tmpUint8 & 0x3F;
-            var numNalus = v.getUint16(offset, !le); // 2
+            let array_completeness = tmpUint8 >> 7 & 0x01;
+            let NAL_unit_type = tmpUint8 & 0x3F;
+            let numNalus = v.getUint16(offset, !le); // 2
             offset += 2;
+            Log.i(this.TAG, `Flv: NAL_unit_type: ${NAL_unit_type}.`);
+
             //
             // offset += 3;
-            if(NAL_unit_type === 32) {
+            if (NAL_unit_type === 32) {
                // VPS
-               if (numNalus === 0) {
+                Log.i(this.TAG, `Flv: VPS numNalus: ${numNalus}.`);
+
+                if (numNalus === 0) {
                     this._onError(DemuxErrors.FORMAT_ERROR, 'Flv: Invalid HEVCDecoderConfigurationRecord: No VPS');
                     return;
                 } else if (numNalus > 1) {
@@ -1284,8 +1371,10 @@ class FLVDemuxer {
                 }
                 // VPS Parse
                 // SPS Parse
-                for (var j = 0; j < numNalus; j++) {
-                    var nalUnitLength = v.getUint16(offset, !le);
+                for (let j = 0; j < numNalus; j++) {
+                    let nalUnitLength = v.getUint16(offset, !le);
+                    Log.i(this.TAG, `Flv: VPS index: ${j} nalUnitLength: ${nalUnitLength}.`);
+
                     offset += 2;
                     if (nalUnitLength === 0) {
                         continue;
@@ -1294,19 +1383,26 @@ class FLVDemuxer {
                     let vps = new Uint8Array(arrayBuffer, dataOffset + offset, nalUnitLength);
                     offset += nalUnitLength;
                     //
+                    // let hevcVps = new HevcVps();
+
+                    // let config = HevcParser.parseVPS(vps);
+
                 }
 
-            } else if(NAL_unit_type === 33) {
-               // SPS
-               if (numNalus === 0) {
+            } else if (NAL_unit_type === 33) {
+                Log.i(this.TAG, `Flv: SPS numNalus: ${numNalus}.`);
+
+                // SPS
+                if (numNalus === 0) {
                     this._onError(DemuxErrors.FORMAT_ERROR, 'Flv: Invalid HEVCDecoderConfigurationRecord: No SPS');
                     return;
                 } else if (numNalus > 1) {
                     Log.w(this.TAG, `Flv: Strange HEVCDecoderConfigurationRecord: SPS Count = ${numNalus}`);
                 }
                 // SPS Parse
-                for (var j = 0; j < numNalus; j++) {
-                    var nalUnitLength = v.getUint16(offset, !le);
+                for (let j = 0; j < numNalus; j++) {
+                    let nalUnitLength = v.getUint16(offset, !le);
+                    Log.i(this.TAG, `Flv: SPS index: ${j} nalUnitLength: ${nalUnitLength}.`);
                     offset += 2;
                     if (nalUnitLength === 0) {
                         continue;
@@ -1315,7 +1411,7 @@ class FLVDemuxer {
                     let sps = new Uint8Array(arrayBuffer, dataOffset + offset, nalUnitLength);
                     offset += nalUnitLength;
                     //
-                    let config = HEVCParser.parseSPS(sps);
+                    let config = HevcParser.parseSPS(sps);
                     if (j !== 0) {
                     // ignore other sps's config
                         continue;
@@ -1343,15 +1439,6 @@ class FLVDemuxer {
                     let fps_num = meta.frameRate.fps_num;
                     meta.refSampleDuration = meta.timescale * (fps_den / fps_num);
 
-                    let codecArray = sps.subarray(1, 4);
-                    let codecString = 'hev1.';
-                    for (let j = 0; j < 3; j++) {
-                        let h = codecArray[j].toString(16);
-                        if (h.length < 2) {
-                            h = '0' + h;
-                        }
-                        codecString += h;
-                    }
                     meta.codec = codecString;
 
                     let mi = this._mediaInfo;
@@ -1373,13 +1460,18 @@ class FLVDemuxer {
                     } else {
                         mi.mimeType = 'video/x-flv; codecs="' + mi.videoCodec + '"';
                     }
+
+                    Log.w(this.TAG, `Flv: mi.mimeType = ${mi.mimeType}`);
+
                     if (mi.isComplete()) {
                         this._onMediaInfo(mi);
                     }
                     //
                 }
-            } else if(NAL_unit_type === 34) {
+            } else if (NAL_unit_type === 34) {
                 // PPS
+                Log.i(this.TAG, `Flv: PPS numNalus: ${numNalus}.`);
+
                 if (numNalus === 0) {
                     this._onError(DemuxErrors.FORMAT_ERROR, 'Flv: Invalid HEVCDecoderConfigurationRecord: No PPS');
                     return;
@@ -1387,8 +1479,8 @@ class FLVDemuxer {
                     Log.w(this.TAG, `Flv: Strange HEVCDecoderConfigurationRecord: PPS Count = ${numNalus}`);
                 }
                 // PPS Parse
-                for (var j = 0; j < numNalus; j++) {
-                    var nalUnitLength = v.getUint16(offset, !le);
+                for (let j = 0; j < numNalus; j++) {
+                    let nalUnitLength = v.getUint16(offset, !le);
                     offset += 2;
                     if (nalUnitLength === 0) {
                         continue;
@@ -1421,6 +1513,8 @@ class FLVDemuxer {
 
     _parseHevcVideoData(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition, frameType, cts) {
         // 
+        Log.i(this.TAG, ` _parseHevcVideoData: ${dataSize}.`);
+
         let le = this._littleEndian;
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
 
@@ -1455,7 +1549,9 @@ class FLVDemuxer {
             let data = new Uint8Array(arrayBuffer, dataOffset + offset, lengthSize + naluSize);
             let unit = {type: unitType, data: data};
             units.push(unit);
+            Log.w(this.TAG, ` ${data} !`);
             length += data.byteLength;
+            Log.w(this.TAG, `byteLength: ${data.byteLength} !`);
 
             offset += lengthSize + naluSize;
         }

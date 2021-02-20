@@ -19,6 +19,33 @@
 import Log from '../utils/logger.js';
 import ExpGolomb from './exp-golomb.js';
 
+class HevcSps {
+
+}
+
+class HevcVps {
+
+}
+
+class HevcPTL {
+
+}
+class pic_conf_win {
+
+}
+
+class temporal_layer {
+
+}
+
+class HevcPcm {
+
+}
+
+class HevcRps {
+
+}
+
 class HevcParser {
 
     static FFMAX(a, b) {
@@ -103,8 +130,6 @@ class HevcParser {
         constants.FF_PROFILE_HEVC_MAIN_STILL_PICTURE =          3;
         constants.FF_PROFILE_HEVC_REXT =                        4;
     }
-        
-    
 
     static _ebsp2rbsp(uint8array) {
         let src = uint8array;
@@ -134,10 +159,11 @@ class HevcParser {
         let k  = 0;
         let i;
 
-        if (rps != sps.st_rps && sps.nb_st_rps)
+        if (rps !== sps.st_rps && sps.nb_st_rps > 0)
             rps_predict = gb.readBits(1);//  get_bits1(gb);
 
-        if (rps_predict) {
+        Log.i(this.TAG, `rps_predict: ${rps_predict}.`);
+        if (rps_predict === 1) {
             // const ShortTermRPS *rps_ridx;
             let rps_ridx;
             let delta_rps;
@@ -149,7 +175,7 @@ class HevcParser {
                 let delta_idx = gb.readUEG() + 1;// get_ue_golomb_long(gb) + 1;
                 if (delta_idx > sps.nb_st_rps) {
                     Log.e(this.TAG,
-                    'Invalid value of delta_idx in slice header RPS: ${delta_idx} > ${sps.nb_st_rps}.');
+                    `Invalid value of delta_idx in slice header RPS: ${delta_idx} > ${sps.nb_st_rps}.`);
                     return -1;
                 }
                 rps_ridx = sps.st_rps[sps.nb_st_rps - delta_idx];
@@ -195,7 +221,7 @@ class HevcParser {
             rps.num_delta_pocs    = k;
             rps.num_negative_pics = k0;
             // sort in increasing order (smallest first)
-            if (rps.num_delta_pocs != 0) {
+            if (rps.num_delta_pocs !== 0) {
                 let used, tmp;
                 for (i = 1; i < rps.num_delta_pocs; i++) {
                     delta_poc = rps.delta_poc[i];
@@ -211,7 +237,7 @@ class HevcParser {
                     }
                 }
             }
-            if ((rps.num_negative_pics >> 1) != 0) {
+            if ((rps.num_negative_pics >> 1) !== 0) {
                 let used;
                 k = rps.num_negative_pics - 1;
                 // flip the negative values to largest first
@@ -237,8 +263,14 @@ class HevcParser {
             }
 
             rps.num_delta_pocs = rps.num_negative_pics + nb_positive_pics;
-            if (rps.num_delta_pocs) {
+
+            Log.i(this.TAG, `rps.num_delta_pocs: ${rps.num_delta_pocs}.`);
+            Log.i(this.TAG, `nb_positive_pics: ${nb_positive_pics}.`);
+
+            if (rps.num_delta_pocs === 1) {
                 prev = 0;
+                rps.delta_poc = new Array();
+                rps.used = new Array();
                 for (i = 0; i < rps.num_negative_pics; i++) {
                     delta_poc = gb.readUEG() + 1;// get_ue_golomb_long(gb) + 1;
                     if (delta_poc < 1 || delta_poc > 32768) {
@@ -264,18 +296,24 @@ class HevcParser {
                 }
             }
         }
+        Log.i(this.TAG, '[out]');
         return 0;
     }
 
     static decode_vui(gb, avctx, apply_defdispwin, sps) {
         //
+        Log.i(this.TAG, '[IN] decode_vui');
+        //
+
+        Log.i(this.TAG, '[OUT] decode_vui');
     }
     static parseSPS(uint8array) {
         let rbsp = HevcParser._ebsp2rbsp(uint8array);
         let gb = new ExpGolomb(rbsp);
-        let sps;
+        let sps = new HevcSps();
         let i;
-        let apply_defdispwin = 1;
+        // let apply_defdispwin = 1;
+        let apply_defdispwin = 0;
         let bit_depth = 8;
         let chroma_format_idc = 1;
         let chroma_format = 420;
@@ -283,25 +321,35 @@ class HevcParser {
 
         sps.vps_id = gb.readBits(4);
 
-        sps.max_sub_layers = gb.readBits(3) + 1;
+        sps.max_sub_layers = gb.readBits(3); // +1
         if (sps.max_sub_layers > HevcParser.constants.HEVC_MAX_SUB_LAYERS) {
-            Log.e(this.TAG, 'sps_max_sub_layers out of range: ${sps.max_sub_layers}');
+            Log.e(this.TAG, `sps_max_sub_layers out of range: ${sps.max_sub_layers}`);
             return -1;
         }
         sps.temporal_id_nesting_flag = gb.readBits(1);
         //
-
-        if (HevcParser.parse_ptl(gb, sps.ptl, sps.max_sub_layers) < 0) {
+        Log.i(this.TAG, `sps.vps_id: ${sps.vps_id}`);
+        Log.i(this.TAG, `sps.max_sub_layers: ${sps.max_sub_layers}`);
+        Log.i(this.TAG, `sps.temporal_id_nesting_flag: ${sps.temporal_id_nesting_flag}`);
+        sps.ptl = new HevcPTL();
+        if (HevcParser.hvcc_parse_ptl(gb, sps.ptl, sps.max_sub_layers) < 0) {
             Log.e(this.TAG, 'SPS parse_ptl filed.');
             return -1;
         }
+        // sps_seq_parameter_set_id
         let sps_id = gb.readUEG();// get_ue_golomb_long(gb);
+        Log.i(this.TAG, `sps.sps_id: ${sps_id}`);
+
         if (sps_id >= HevcParser.constants.HEVC_MAX_SPS_COUNT) {
             Log.e(this.TAG, 'SPS id out of range: ${sps_id}');
             return -1;
         }
         //
+        Log.i(this.TAG, `sps_id ${sps_id}.`);
+
         sps.chroma_format_idc =  gb.readUEG();// get_ue_golomb_long(gb);
+        Log.i(this.TAG, `chroma_format_idc ${sps.chroma_format_idc}.`);
+
         if (sps.chroma_format_idc > 3) {
             Log.e(this.TAG, 'chroma_format_idc ${sps.chroma_format_idc} is invalid.');
             return -1;
@@ -317,14 +365,21 @@ class HevcParser {
         if (sps.separate_colour_plane_flag) {
             sps.chroma_format_idc = 0;
         }
+        Log.i(this.TAG, `chroma_format: ${chroma_format}`);
 
         sps.width  = gb.readUEG(); // get_ue_golomb_long(gb);
         sps.height = gb.readUEG(); // get_ue_golomb_long(gb);
-        //
+        Log.i(this.TAG, `sps.width: ${sps.width} height ${sps.height}`);
+
+        // conformance_window_flag
         if (gb.readBool()) {
             //
             let vert_mult  = HevcParser.constants.hevc_sub_height_c[sps.chroma_format_idc];
             let horiz_mult = HevcParser.constants.hevc_sub_width_c[sps.chroma_format_idc];
+            Log.i(this.TAG, `vert_mult: ${vert_mult} horiz_mult ${horiz_mult}`);
+            sps.pic_conf_win = new pic_conf_win();
+            sps.output_window = new pic_conf_win();
+
             sps.pic_conf_win.left_offset   = gb.readUEG() * horiz_mult; // get_ue_golomb_long(gb) * horiz_mult;
             sps.pic_conf_win.right_offset  = gb.readUEG() * horiz_mult; // get_ue_golomb_long(gb) * horiz_mult;
             sps.pic_conf_win.top_offset    = gb.readUEG() *  vert_mult; // get_ue_golomb_long(gb) *  vert_mult;
@@ -347,28 +402,36 @@ class HevcParser {
             */
             sps.output_window = sps.pic_conf_win;
         }
+
         //
         sps.bit_depth   = gb.readUEG() + 8; // get_ue_golomb_long(gb) + 8;
+        Log.i(this.TAG, `sps.bit_depth: ${sps.bit_depth}`);
+
         bit_depth = sps.bit_depth;
         let bit_depth_chroma = gb.readUEG() + 8;// get_ue_golomb_long(gb) + 8;
         //
-        if (sps.chroma_format_idc && bit_depth_chroma != sps.bit_depth) {
+        if (sps.chroma_format_idc !== 0 && bit_depth_chroma !== sps.bit_depth) {
             Log.e(this.TAG,
                    'Luma bit depth (${sps.bit_depth}) is different from chroma bit depth (${bit_depth_chroma}), this is unsupported.');
             return -1;
         }
         sps.bit_depth_chroma = bit_depth_chroma;
+        Log.i(this.TAG, `sps.bit_depth_chroma: ${sps.bit_depth_chroma}`);
 
         sps.log2_max_poc_lsb = gb.readUEG() + 4;// get_ue_golomb_long(gb) + 4;
         if (sps.log2_max_poc_lsb > 16) {
             Log.e(this.TAG, 'log2_max_pic_order_cnt_lsb_minus4 out range: ${sps.log2_max_poc_lsb - 4}');
             return -1;
         }
+        Log.i(this.TAG, `sps.log2_max_poc_lsb: ${sps.log2_max_poc_lsb}`);
+
         //
         let sublayer_ordering_info = gb.readBits(1); // get_bits1(gb);
         let start = sublayer_ordering_info ? 0 : sps.max_sub_layers - 1;
-
+        Log.i(this.TAG, `sublayer_ordering_info: ${sublayer_ordering_info}`);
+        sps.temporal_layer = new Array();
         for (i = start; i < sps.max_sub_layers; i++) {
+            sps.temporal_layer[i] = new temporal_layer();
             sps.temporal_layer[i].max_dec_pic_buffering = gb.readUEG() + 1; // get_ue_golomb_long(gb) + 1;
             sps.temporal_layer[i].num_reorder_pics      = gb.readUEG();     // get_ue_golomb_long(gb);
             sps.temporal_layer[i].max_latency_increase  = gb.readUEG() - 1; // get_ue_golomb_long(gb) - 1;
@@ -388,14 +451,14 @@ class HevcParser {
             }
         }
         //
-        if (!sublayer_ordering_info) {
+        if (sublayer_ordering_info === 0) {
             for (i = 0; i < start; i++) {
                 sps.temporal_layer[i].max_dec_pic_buffering = sps.temporal_layer[start].max_dec_pic_buffering;
                 sps.temporal_layer[i].num_reorder_pics      = sps.temporal_layer[start].num_reorder_pics;
                 sps.temporal_layer[i].max_latency_increase  = sps.temporal_layer[start].max_latency_increase;
             }
         }
-    
+        
         sps.log2_min_cb_size                    = gb.readUEG() + 3; // get_ue_golomb_long(gb) + 3;
         sps.log2_diff_max_min_coding_block_size = gb.readUEG();    // get_ue_golomb_long(gb);
         sps.log2_min_tb_size                    = gb.readUEG() + 2; // get_ue_golomb_long(gb) + 2;
@@ -403,6 +466,9 @@ class HevcParser {
         sps.log2_max_trafo_size                 = log2_diff_max_min_transform_block_size +
                                                    sps.log2_min_tb_size;
     
+        Log.i(this.TAG, `log2_min_cb_size: ${sps.log2_min_cb_size}`);
+        Log.i(this.TAG, `log2_diff_max_min_coding_block_size: ${sps.log2_diff_max_min_coding_block_size}`);
+
         if (sps.log2_min_cb_size < 3 || sps.log2_min_cb_size > 30) {
             Log.e(this.TAG, 'Invalid value ${sps.log2_min_cb_size} for log2_min_cb_size');
             return -1;
@@ -425,9 +491,11 @@ class HevcParser {
     
         sps.max_transform_hierarchy_depth_inter = gb.readUEG();// get_ue_golomb_long(gb);
         sps.max_transform_hierarchy_depth_intra = gb.readUEG();// get_ue_golomb_long(gb);
-    
+        Log.i(this.TAG, `max_transform_hierarchy_depth_inter: ${sps.max_transform_hierarchy_depth_inter}`);
+        Log.i(this.TAG, `max_transform_hierarchy_depth_intra: ${sps.max_transform_hierarchy_depth_intra}`);
+        
         sps.scaling_list_enable_flag = gb.readBits(1);// get_bits1(gb);
-        if (sps.scaling_list_enable_flag) {
+        if (sps.scaling_list_enable_flag === 1) {
             // set_default_scaling_list_data(&sps.scaling_list);
     
             if (gb.readBool()) { // get_bits1(gb)
@@ -436,12 +504,18 @@ class HevcParser {
                 //     return ret;
             }
         }
-    
+        Log.i(this.TAG, `scaling_list_enable_flag: ${sps.scaling_list_enable_flag}`);
+        
         sps.amp_enabled_flag = gb.readBits(1);// get_bits1(gb);
         sps.sao_enabled      = gb.readBits(1);// get_bits1(gb);
+        Log.i(this.TAG, `amp_enabled_flag: ${sps.amp_enabled_flag}`);
+        Log.i(this.TAG, `sao_enabled: ${sps.sao_enabled}`);
     
         sps.pcm_enabled_flag = gb.readBits(1);// get_bits1(gb);
-        if (sps.pcm_enabled_flag) {
+        Log.i(this.TAG, `pcm_enabled_flag: ${sps.pcm_enabled_flag}`);
+
+        if (sps.pcm_enabled_flag === 1) {
+            sps.pcm = new HevcPcm();
             sps.pcm.bit_depth   = gb.readBits(4) + 1;       // get_bits(gb, 4) + 1;
             sps.pcm.bit_depth_chroma = gb.readBits(4) + 1;  // get_bits(gb, 4) + 1;
             sps.pcm.log2_min_pcm_cb_size = gb.readUEG() + 3; // get_ue_golomb_long(gb) + 3;
@@ -449,7 +523,7 @@ class HevcParser {
                                             gb.readUEG();// get_ue_golomb_long(gb);
             if (HevcParser.FFMAX(sps.pcm.bit_depth, sps.pcm.bit_depth_chroma) > sps.bit_depth) {
                 Log.e(this.TAG,
-                       'PCM bit depth (${sps.pcm.bit_depth}, ${sps.pcm.bit_depth_chroma}) is greater than normal bit depth (${sps.bit_depth})');
+                       `PCM bit depth (${sps.pcm.bit_depth}, ${sps.pcm.bit_depth_chroma}) is greater than normal bit depth (${sps.bit_depth})`);
                 return -1;
             }
             sps.pcm.loop_filter_disable_flag = gb.readBits(1); // get_bits1(gb);
@@ -460,18 +534,31 @@ class HevcParser {
             Log.e(this.TAG, 'Too many short term RPS: ${sps.nb_st_rps}.');
             return -1;
         }
+
+        Log.i(this.TAG, `RPS: ${sps.nb_st_rps}.`);
+
         for (i = 0; i < sps.nb_st_rps; i++) {
-            if (HevcParser.ff_hevc_decode_short_term_rps(gb, sps.st_rps[i], sps, 0) < 0)
+            sps.st_rps = new Array(64); //HevcRps();
+            
+            sps.st_rps[i] = new HevcRps();
+
+            if (HevcParser.ff_hevc_decode_short_term_rps(gb, sps.st_rps[i], sps, 0) < 0) {
+                Log.e(this.TAG, 'Too many long term ref pics: ${sps.nb_st_rps}.');
                 return -1;
+            }
         }
     
         sps.long_term_ref_pics_present_flag = gb.readBits(1); // get_bits1(gb);
-        if (sps.long_term_ref_pics_present_flag) {
+        Log.i(this.TAG, `long_term_ref_pics_present_flag: ${sps.long_term_ref_pics_present_flag}.`);
+        
+        if (sps.long_term_ref_pics_present_flag === 1) {
             sps.num_long_term_ref_pics_sps = gb.readUEG(); // get_ue_golomb_long(gb);
             if (sps.num_long_term_ref_pics_sps > HevcParser.constants.HEVC_MAX_LONG_TERM_REF_PICS) {
                 Log.e(this.TAG, 'Too many long term ref pics: ${sps.num_long_term_ref_pics_sps}.');
                 return -1;
             }
+            sps.lt_ref_pic_poc_lsb_sps = new Array();
+            sps.used_by_curr_pic_lt_sps_flag = new Array();
             for (i = 0; i < sps.num_long_term_ref_pics_sps; i++) {
                 sps.lt_ref_pic_poc_lsb_sps[i]       = gb.readBits(sps.log2_max_poc_lsb);// get_bits(gb, sps.log2_max_poc_lsb);
                 sps.used_by_curr_pic_lt_sps_flag[i] = gb.readBits(1); //get_bits1(gb);
@@ -480,16 +567,22 @@ class HevcParser {
     
         sps.sps_temporal_mvp_enabled_flag          = gb.readBits(1); // get_bits1(gb);
         sps.sps_strong_intra_smoothing_enable_flag = gb.readBits(1); // get_bits1(gb);
-        sps.vui.sar = { num: 0, den: 1 }; //
+        // sps.vui.sar = { num: 0, den: 1 }; //
+        let sar = { num: 0, den: 1 }; //
         let vui_present =  gb.readBits(1); // get_bits1(gb);
-        if (vui_present) {
+
+        Log.i(this.TAG, `sps_temporal_mvp_enabled_flag: ${sps.sps_temporal_mvp_enabled_flag}.`);
+        Log.i(this.TAG, `sps_strong_intra_smoothing_enable_flag: ${sps.sps_strong_intra_smoothing_enable_flag}.`);
+        Log.i(this.TAG, `vui_present: ${vui_present}.`);
+/*
+        if (vui_present === 1) {
             HevcParser.decode_vui(gb, apply_defdispwin, sps);
         }
     
         if (gb.readBool()) { // get_bits1(gb) sps_extension_flag
             sps.sps_range_extension_flag = gb.readBits(1);// get_bits1(gb);
             gb.readBits(7);// skip_bits(gb, 7); //sps_extension_7bits = get_bits(gb, 7);
-            if (sps.sps_range_extension_flag) {
+            if (sps.sps_range_extension_flag === 1) {
                 sps.transform_skip_rotation_enabled_flag = gb.readBits(1);// get_bits1(gb);
                 sps.transform_skip_context_enabled_flag  = gb.readBits(1);// get_bits1(gb);
                 sps.implicit_rdpcm_enabled_flag = gb.readBits(1); // get_bits1(gb);
@@ -515,8 +608,8 @@ class HevcParser {
                 }
             }
         }
-
-        if (apply_defdispwin) {
+*/
+        if (apply_defdispwin === 1) {
             sps.output_window.left_offset   += sps.vui.def_disp_win.left_offset;
             sps.output_window.right_offset  += sps.vui.def_disp_win.right_offset;
             sps.output_window.top_offset    += sps.vui.def_disp_win.top_offset;
@@ -594,7 +687,10 @@ class HevcParser {
 
         gb.destroy();
         gb = null;
-
+        let profile_string = 'main';
+        let level_string = '93';
+        let ref_frames = 0;
+        Log.i(this.TAG, 'End Parse SPS.');
         return {
             profile_string: profile_string,  // baseline, high, high10, ...
             level_string: level_string,  // 3, 3.1, 4, 4.1, 5, 5.1, ...
@@ -604,34 +700,38 @@ class HevcParser {
             chroma_format_string: HevcParser.getChromaFormatString(chroma_format),
 
             frame_rate: {
-                fixed: fps_fixed,
-                fps: fps,
-                fps_den: fps_den,
-                fps_num: fps_num
+                fixed: 30, // fps_fixed,
+                fps: 30, // fps,
+                fps_den: 1, //fps_den,
+                fps_num: 20, // fps_num
             },
 
             sar_ratio: {
-                width: sar_width,
-                height: sar_height
+                width: 1, // sar_width,
+                height: 1, // sar_height
             },
 
             codec_size: {
-                width: codec_width,
-                height: codec_height
+                width: sps.width,  // codec_width,
+                height: sps.height, // codec_height
             },
 
             present_size: {
-                width: present_width,
-                height: codec_height
+                width: 1920, // present_width,
+                height: 1080, // codec_height
             }
         };
     }
     
     static decode_profile_tier_level(gb, ptl) {
         //
+        Log.i(this.TAG, `decode_profile_tier_level ${gb.getBitsLeft()} bits`);
+        /*
         if (gb.getBitsLeft() < 2 + 1 + 5 + 32 + 4 + 43 + 1) {
-            return -1;
+            Log.w(this.TAG, `getBitsLeft:${gb.getBitsLeft()}`);
+            return 0;
         }
+        */
         let i;
         ptl.profile_space = gb.readBits(2);
         ptl.tier_flag     = gb.readBits(1);
@@ -701,8 +801,8 @@ class HevcParser {
                 //
                 gb.readBits(7);
                 ptl.one_picture_only_constraint_flag = gb.readBits(1);
-                gb.readBits(1); // XXX_reserved_zero_35bits[0..34]
-                gb.readBits(35); // XXX_reserved_zero_35bits[0..34]
+                gb.readBits(3); // XXX_reserved_zero_35bits[0..34]
+                gb.readBits(32); // XXX_reserved_zero_35bits[0..34]
                 break;
             }
             default: {
@@ -725,20 +825,96 @@ class HevcParser {
 
         return 0;
     }
+    static hvcc_parse_ptl(gb, general_ptl, max_sub_layers_minus1) {
+        //
+        Log.i(this.TAG, `[in] PTL hvcc_parse_ptl ${max_sub_layers_minus1}.`);
 
+        general_ptl.profile_space               = gb.readBits(2); // get_bits(gb, 2);
+        Log.i(this.TAG, `PTL profile_space ${general_ptl.profile_space}.`);
+
+        general_ptl.tier_flag                   = gb.readBits(1); //  get_bits1(gb);
+        general_ptl.profile_idc                 = gb.readBits(5); // get_bits(gb, 5);
+        general_ptl.profile_compatibility_flags = gb.readBits(32);//  get_bits_long(gb, 32);
+        general_ptl.constraint_indicator_flags  = gb.readBits(16) << 32 | gb.readBits(32); // get_bits64(gb, 48);
+        general_ptl.level_idc                   = gb.readBits(8); // get_bits(gb, 8);
+        //
+        Log.i(this.TAG, `PTL tier_flag ${general_ptl.tier_flag}.`);
+        Log.i(this.TAG, `PTL profile_idc ${general_ptl.profile_idc}.`);
+        Log.i(this.TAG, `PTL profile_compatibility_flags ${general_ptl.profile_compatibility_flags}.`);
+        Log.i(this.TAG, `PTL constraint_indicator_flags ${general_ptl.constraint_indicator_flags}.`);
+        Log.i(this.TAG, `PTL level_idc ${general_ptl.level_idc}.`);
+
+        let sub_layer_profile_present_flag = new Array();
+        let sub_layer_level_present_flag = new Array();
+        //
+        let i = 0;
+
+        for (i = 0; i < max_sub_layers_minus1; i++) {
+            sub_layer_profile_present_flag[i] = gb.readBits(1);// get_bits1(gb)
+            sub_layer_level_present_flag[i]   = gb.readBits(1);// get_bits1(gb);
+            Log.i(this.TAG, `PTL max_sub_layers_minus1 ${i} ${sub_layer_profile_present_flag[i]} ${sub_layer_level_present_flag[i]}.`);
+
+        }
+        //
+        if (max_sub_layers_minus1 > 0) {
+            for (i = max_sub_layers_minus1; i < 8; i++) {
+                Log.i(this.TAG, `PTL gb.skipBits(2) ${i}.`);
+                gb.readBits(2); // skip_bits(gb, 2); // reserved_zero_2bits[i]
+
+            }
+        }
+        //
+        for (i = 0; i < max_sub_layers_minus1; i++) {
+            Log.i(this.TAG, `PTL max_sub_layers_minus1 ${i}.`);
+
+            if (sub_layer_profile_present_flag[i] === 1) {
+                /*
+                 * sub_layer_profile_space[i]                     u(2)
+                 * sub_layer_tier_flag[i]                         u(1)
+                 * sub_layer_profile_idc[i]                       u(5)
+                 * sub_layer_profile_compatibility_flag[i][0..31] u(32)
+                 * sub_layer_progressive_source_flag[i]           u(1)
+                 * sub_layer_interlaced_source_flag[i]            u(1)
+                 * sub_layer_non_packed_constraint_flag[i]        u(1)
+                 * sub_layer_frame_only_constraint_flag[i]        u(1)
+                 * sub_layer_reserved_zero_44bits[i]              u(44)
+                 */
+                gb.skipBits(32);// skip_bits_long(gb, 32);
+                gb.skipBits(32);// skip_bits_long(gb, 32);
+                gb.skipBits(24);// skip_bits     (gb, 24);
+            }
+    
+            if (sub_layer_level_present_flag[i] === 1) {
+                gb.skipBits(8); // skip_bits(gb, 8);
+            }
+        }
+        Log.i(this.TAG, `[out] PTL hvcc_parse_ptl ${max_sub_layers_minus1}.`);
+    }
     static parse_ptl(gb, ptl, max_num_sub_layers) {
         let i;
+        Log.i(this.TAG, `PTL parse_ptl ${max_num_sub_layers} ${gb.getBitsLeft()}.`);
+
         if (HevcParser.decode_profile_tier_level(gb) < 0 ||
             gb.getBitsLeft() < 8 + (8 * 2 * (max_num_sub_layers - 1 > 0))) {
             Log.e(this.TAG,  'PTL information too short');
             return -1;
         }
 
-        ptl.general_ptl.level_idc = gb.readBits(8);
+        // ptl.general_ptl.level_idc = gb.readBits(8);
+        let level_idc = gb.readBits(8);
         //
+        Log.i(this.TAG, `PTL level_idc:${level_idc}.`);
+        ptl.sub_layer_profile_present_flag = new Array();
+        ptl.sub_layer_level_present_flag = new Array();
+        ptl.sub_layer_ptl = new Array();
+
+        
+        Log.i(this.TAG, `PTL max_num_sub_layers:${max_num_sub_layers}.`);
         for (i = 0; i < max_num_sub_layers - 1; i++) {
+            // gb.readBits(1);
             ptl.sub_layer_profile_present_flag[i] = gb.readBits(1);
             ptl.sub_layer_level_present_flag[i]   = gb.readBits(1);
+            // gb.readBits(1);
         }
         //
         if (max_num_sub_layers - 1 > 0) {
@@ -749,13 +925,13 @@ class HevcParser {
         }
         //
         for (i = 0; i < max_num_sub_layers - 1; i++) {
-            if (ptl.sub_layer_profile_present_flag[i] &&
+            if (ptl.sub_layer_profile_present_flag[i] === 1 &&
                 HevcParser.decode_profile_tier_level(gb, ptl.sub_layer_ptl[i]) < 0) {
                 //
                 Log.e(this.TAG, 'PTL information for sublayer ${i} too short.');
                 return -1;
             }
-            if (ptl.sub_layer_level_present_flag[i]) {
+            if (ptl.sub_layer_level_present_flag[i] === 1) {
                 if (gb.getBitsLeft() < 8) {
                     Log.e(this.TAG, 'Not enough data for sublayer ${i} level_idc');
                     return -1;
@@ -764,6 +940,8 @@ class HevcParser {
                 }
             }
         }
+
+        Log.i(this.TAG, `[OUT] PTL parse_ptl ${max_num_sub_layers} ${gb.getBitsLeft()}.`);
         return 0;
     }
 
@@ -849,22 +1027,28 @@ class HevcParser {
         return 0;
     }
 
-    static parseVPS(uint8array, vps) {
+    static parseVPS(uint8array) {
+        Log.i(this.TAG, ' parseVPS ');
         let rbsp = HevcParser._ebsp2rbsp(uint8array);
         let gb = new ExpGolomb(rbsp);
         let i;
         let j;
+        let vps = new HevcVps();
 
-        let vps_id =  gb.readBits(4); // u(4)
+        let vps_id =  gb.readBits(4);                       // u(4)
         vps.vps_video_parameter_set_id = vps_id;
-        vps.vps_base_layer_internal_flag = gb.readBits(1); // u(1)
+        vps.vps_base_layer_internal_flag = gb.readBits(1);  // u(1)
         vps.vps_base_layer_available_flag = gb.readBits(1); // u(1)
         //
-        vps.vps_max_layers_minus1 = gb.readBits(6) + 1; // u(6)
-        vps.vps_max_sub_layers_minus1 = gb.readBits(3) + 1; // u(3)
-        vps.vps_temporal_id_nesting_flag = gb.readBits(1); // u(1)
+        Log.i(this.TAG, `vps_id: ${vps_id} `);
+        Log.i(this.TAG, `vps_base_layer_internal_flag : ${vps.vps_base_layer_internal_flag} `);
+        Log.i(this.TAG, `vps_base_layer_available_flag: ${vps.vps_base_layer_available_flag} `);
 
-        let vps_reserved_0xffff_16bits = gb.readBits(16); // u(16)
+        vps.vps_max_layers = gb.readBits(6) + 1;     // u(6)
+        vps.vps_max_sub_layers = gb.readBits(3) + 1; // u(3)
+        vps.vps_temporal_id_nesting_flag = gb.readBits(1);  // u(1)
+
+        let vps_reserved_0xffff_16bits = gb.readBits(16);   // u(16)
         if (vps_reserved_0xffff_16bits !== 0xffff) {
             // error: 'vps_reserved_ffff_16bits is not 0xffff\n'
         }
@@ -872,24 +1056,40 @@ class HevcParser {
         if (vps.vps_max_sub_layers > HevcParser.constants.HEVC_MAX_SUB_LAYERS) {
             // error: vps_max_sub_layers out of range
         }
+
+        Log.i(this.TAG, `vps_max_layers: ${vps.vps_max_layers} `);
+        Log.i(this.TAG, `vps_max_sub_layers: ${vps.vps_max_sub_layers} `);
+        Log.i(this.TAG, `vps_temporal_id_nesting_flag: ${vps.vps_temporal_id_nesting_flag} `);
+        Log.i(this.TAG, `vps_reserved_0xffff_16bits: ${vps_reserved_0xffff_16bits} `);
+
         //
-        HevcParser.parse_ptl(gb, vps.ptl, vps.vps_max_sub_layers);
+        HevcParser.hvcc_parse_ptl(gb, vps.ptl, vps.vps_max_sub_layers);
+        // parse_ptl
         //
         let vps_sub_layer_ordering_info_present_flag = gb.readBits(1);
         // 
-        i = vps_sub_layer_ordering_info_present_flag ? 0 : vps.vps_max_sub_layers - 1;
+        Log.i(this.TAG, `vps_sub_layer_ordering_info_present_flag: ${vps_sub_layer_ordering_info_present_flag} `);
+
+        i = vps_sub_layer_ordering_info_present_flag === 1 ? 0 : vps.vps_max_sub_layers - 1;
+        Log.i(this.TAG, `vps_sub_layer_ordering_info_present_flag: ${vps_sub_layer_ordering_info_present_flag} ${i} `);
+        
+        vps.vps_max_dec_pic_buffering = new Array();
+        vps.vps_num_reorder_pics = new Array();
+        vps.vps_max_latency_increase = new Array();
 
         for (; i < vps.vps_max_sub_layers; i++) {
+            Log.i(this.TAG, ` ${i} `);
+
             vps.vps_max_dec_pic_buffering[i] = gb.readUEG() + 1;    // get_ue_golomb_long(gb) + 1;
             vps.vps_num_reorder_pics[i]      = gb.readUEG();        // get_ue_golomb_long(gb);
             vps.vps_max_latency_increase[i]  = gb.readUEG() - 1;    // get_ue_golomb_long(gb) - 1;
     
             if (vps.vps_max_dec_pic_buffering[i] > HevcParser.constants.HEVC_MAX_DPB_SIZE || !vps.vps_max_dec_pic_buffering[i]) {
-                Log.e(this.TAG, 'vps_max_dec_pic_buffering_minus1 out of range: ${vps.vps_max_dec_pic_buffering[i] - 1}');
+                Log.e(this.TAG, `vps_max_dec_pic_buffering_minus1 out of range: ${vps.vps_max_dec_pic_buffering[i] - 1}`);
                 // goto err;
             }
             if (vps.vps_num_reorder_pics[i] > vps.vps_max_dec_pic_buffering[i] - 1) {
-                Log.e(this.TAG, 'vps_max_num_reorder_pics out of range: ${vps.vps_num_reorder_pics[i]}');
+                Log.e(this.TAG, `vps_max_num_reorder_pics out of range: ${vps.vps_num_reorder_pics[i]}`);
                 // if (avctx->err_recognition & AV_EF_EXPLODE)
                 //     goto err;
             }
@@ -898,6 +1098,8 @@ class HevcParser {
         vps.vps_max_layer_id   = gb.readBits(6);
         vps.vps_num_layer_sets = gb.readUEG() + 1; // get_ue_golomb_long(gb) + 1;
         //
+        Log.i(this.TAG, `vps_max_layer_id: ${vps.vps_max_layer_id} `);
+        Log.i(this.TAG, `vps_num_layer_sets: ${vps.vps_num_layer_sets} `);
 
         if (vps.vps_num_layer_sets < 1 || vps.vps_num_layer_sets > 1024 ||
             (vps.vps_num_layer_sets - 1) * (vps.vps_max_layer_id + 1) > gb.getBitsLeft()) { 
@@ -914,7 +1116,9 @@ class HevcParser {
         }
     
         vps.vps_timing_info_present_flag = gb.readBits(1); // get_bits1(gb);
-        if (vps.vps_timing_info_present_flag) {
+        Log.i(this.TAG, `vps_num_layer_sets: ${vps.vps_timing_info_present_flag} `);
+
+        if (vps.vps_timing_info_present_flag === 1) {
             vps.vps_num_units_in_tick               = gb.readBits(32); // get_bits_long(gb, 32);
             vps.vps_time_scale                      = gb.readBits(32); // get_bits_long(gb, 32);
             vps.vps_poc_proportional_to_timing_flag = gb.readBits(1); // get_bits1(gb);
@@ -923,9 +1127,13 @@ class HevcParser {
             }
             vps.vps_num_hrd_parameters = gb.readUEG();// get_ue_golomb_long(gb);
             if (vps.vps_num_hrd_parameters > vps.vps_num_layer_sets) {
-                Log.e(this.TAG, 'vps_num_hrd_parameters ${vps.vps_num_hrd_parameters} is invalid.');
+                Log.e(this.TAG, `vps_num_hrd_parameters ${vps.vps_num_hrd_parameters} is invalid.`);
                 // goto err;
             }
+            Log.i(this.TAG, `vps_num_units_in_tick: ${vps.vps_num_units_in_tick} `);
+            Log.i(this.TAG, `vps_time_scale: ${vps.vps_time_scale} `);
+            Log.i(this.TAG, `vps_poc_proportional_to_timing_flag: ${vps.vps_poc_proportional_to_timing_flag} `);
+            Log.i(this.TAG, `vps_num_hrd_parameters: ${vps.vps_num_hrd_parameters} `);
 
             for (i = 0; i < vps.vps_num_hrd_parameters; i++) {
                 let common_inf_present = 1;
@@ -954,6 +1162,7 @@ class HevcParser {
             ps->vps_list[vps_id] = vps_buf;
         }
         */
+        Log.i(this.TAG, '[out]');
         return 0;
     }
 
@@ -1025,8 +1234,10 @@ class HevcParser {
 
         return false;
     }
-    
-
 }
 
+HevcParser.init();
+
 export default HevcParser;
+// export default HevcVps;
+// export default HevcSps;
