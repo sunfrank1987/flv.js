@@ -30,8 +30,8 @@ class MP4 {
             stco: [], stsc: [], stsd: [], stsz: [],
             stts: [], tfdt: [], tfhd: [], traf: [],
             trak: [], trun: [], trex: [], tkhd: [],
-            vmhd: [], smhd: [], '.mp3': [], 
-            hev1:[], hvcC:[]
+            vmhd: [], smhd: [], '.mp3': [],
+            hev1: [], hvcC: []
         };
 
         for (let name in MP4.types) {
@@ -47,13 +47,18 @@ class MP4 {
 
         let constants = MP4.constants = {};
 
-        constants.FTYP = new Uint8Array([
+        constants.FTYP_BAK = new Uint8Array([
             0x69, 0x73, 0x6F, 0x6D,  // major_brand: isom
             0x0,  0x0,  0x0,  0x1,   // minor_version: 0x01
             0x69, 0x73, 0x6F, 0x6D,  // isom
             0x61, 0x76, 0x63, 0x31   // avc1
         ]);
         // 0x68, 0x65, 0x76, 0x31 // hev1
+        constants.FTYP = new Uint8Array([
+            0x69, 0x73, 0x6F, 0x6D,  // major_brand: isom
+            0x0,  0x0,  0x0,  0x1,   // minor_version: 0x01
+            0x69, 0x73, 0x6F, 0x6D  // isom
+        ]);
 
         constants.STSD_PREFIX = new Uint8Array([
             0x00, 0x00, 0x00, 0x00,  // version(0) + flags
@@ -326,6 +331,11 @@ class MP4 {
             // else: aac -> mp4a
             return MP4.box(MP4.types.stsd, MP4.constants.STSD_PREFIX, MP4.mp4a(meta));
         } else {
+            // hev1
+            if (meta.codec.indexOf('hev1') != -1 || meta.codec.indexOf('hvc1') != -1) {
+                return MP4.box(MP4.types.stsd, MP4.constants.STSD_PREFIX, MP4.hvc1(meta));
+            }
+            // avc1
             return MP4.box(MP4.types.stsd, MP4.constants.STSD_PREFIX, MP4.avc1(meta));
         }
     }
@@ -600,7 +610,7 @@ class MP4 {
             0x00, 0x18,              // depth
             0xFF, 0xFF               // pre_defined = -1
         ]);
-        return MP4.box(MP4.types.hvc1, data, MP4.box(MP4.types.hvcC, hvcc));
+        return MP4.box(MP4.types.hev1, data, MP4.box(MP4.types.hvcC, hvcc));
     }
 
 }

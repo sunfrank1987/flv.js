@@ -717,8 +717,8 @@ class HevcParser {
             },
 
             present_size: {
-                width: 1920, // present_width,
-                height: 1080, // codec_height
+                width: sps.width, // 1920, // present_width,
+                height: sps.height, // 1080 codec_height
             }
         };
     }

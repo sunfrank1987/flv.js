@@ -20,8 +20,6 @@ import Log from '../utils/logger.js';
 import AMF from './amf-parser.js';
 import SPSParser from './sps-parser.js';
 import HevcParser from './hevc-parser.js';
-import HevcVps from './hevc-parser.js';
-import HevcSps from './hevc-parser.js';
 import DemuxErrors from './demux-errors.js';
 import MediaInfo from '../core/media-info.js';
 import {IllegalStateException} from '../utils/exception.js';
@@ -272,7 +270,7 @@ class FLVDemuxer {
         if (!this._onError || !this._onMediaInfo || !this._onTrackMetadata || !this._onDataAvailable) {
             throw new IllegalStateException('Flv: onError & onMediaInfo & onTrackMetadata & onDataAvailable callback must be specified');
         }
-        Log.i(this.TAG, `parseChunks: ${chunk}`);
+        // Log.i(this.TAG, `parseChunks: ${chunk.byteLength}`);
         let offset = 0;
         let le = this._littleEndian;
 
@@ -301,7 +299,7 @@ class FLVDemuxer {
 
         while (offset < chunk.byteLength) {
             this._dispatch = true;
-            Log.i(this.TAG, `chunk.byteLength: ${chunk.byteLength}`);
+            // Log.i(this.TAG, `chunk.byteLength: ${chunk.byteLength}`);
 
             let v = new DataView(chunk, offset);
 
@@ -825,7 +823,7 @@ class FLVDemuxer {
     }
 
     _parseVideoData(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition) {
-        Log.d(this.TAG, 'dataSize: ${dataSize}');
+        // Log.d(this.TAG, `dataSize: ${dataSize}`);
         if (dataSize <= 1) {
             Log.w(this.TAG, 'Flv: Invalid video packet, missing VideoData payload!');
             return;
@@ -841,7 +839,7 @@ class FLVDemuxer {
 
         let frameType = (spec & 240) >>> 4;
         let codecId = spec & 15;
-        Log.d(this.TAG, 'codecId: ${codecId}');
+        // Log.d(this.TAG, `codecId: ${codecId}`);
 
         if (codecId == 7) {
             this._parseAVCVideoPacket(arrayBuffer, dataOffset + 1, dataSize - 1, tagTimestamp, tagPosition, frameType);
@@ -1105,7 +1103,7 @@ class FLVDemuxer {
     }
 
     _parseHEVCVideoPacket(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition, frameType) {
-        Log.i(this.TAG, 'Flv: _parseHEVCVideoPacket ${dataSize}');
+        // Log.i(this.TAG, `Flv: _parseHEVCVideoPacket ${dataSize}`);
         if (dataSize < 4) {
             Log.w(this.TAG, 'Flv: Invalid HEVC packet, missing HEVCPacketType or/and CompositionTime');
             return;
@@ -1115,7 +1113,7 @@ class FLVDemuxer {
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
 
         let packetType = v.getUint8(0); // (v.getUint8(0) & 0x7E) >> 1; // type = (nal_start[0] & 0x7E) >> 1;
-        Log.i(this.TAG, 'Flv: packetType: ${packetType}.');
+        // Log.i(this.TAG, `Flv: packetType: ${packetType}.`);
 
         let cts_unsigned = v.getUint32(0, !le) & 0x00FFFFFF;
         let cts = (cts_unsigned << 8) >> 8;  // convert to 24-bit signed int
@@ -1153,7 +1151,8 @@ class FLVDemuxer {
             return;
         }
         
-        let codecString = 'hev1.';
+        // let codecString = 'hev1.';
+        let codecString = 'hvc1.';
 
         let meta = this._videoMetadata;
         let track = this._videoTrack;
@@ -1513,7 +1512,7 @@ class FLVDemuxer {
 
     _parseHevcVideoData(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition, frameType, cts) {
         // 
-        Log.i(this.TAG, ` _parseHevcVideoData: ${dataSize}.`);
+        // Log.i(this.TAG, ` _parseHevcVideoData: ${dataSize}.`);
 
         let le = this._littleEndian;
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
@@ -1549,9 +1548,9 @@ class FLVDemuxer {
             let data = new Uint8Array(arrayBuffer, dataOffset + offset, lengthSize + naluSize);
             let unit = {type: unitType, data: data};
             units.push(unit);
-            Log.w(this.TAG, ` ${data} !`);
+            // Log.w(this.TAG, ` ${data} !`);
             length += data.byteLength;
-            Log.w(this.TAG, `byteLength: ${data.byteLength} !`);
+            // Log.w(this.TAG, `byteLength: ${data.byteLength} !`);
 
             offset += lengthSize + naluSize;
         }
